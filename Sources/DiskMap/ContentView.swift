@@ -357,48 +357,35 @@ private struct BreakdownPane: View {
 
     var body: some View {
         VStack(spacing: 0) {
+            // The contents list needs no heading: it is the pane, and every row
+            // is self-describing.
             ScrollView {
-                VStack(alignment: .leading, spacing: 14) {
-                    if !model.breakdown.rows.isEmpty {
-                        PaneSection(title: "Contents, largest first") {
-                            // Lazy: a folder with dozens of children rebuilt every
-                            // row on every navigation, and SwiftUI's view graph
-                            // was the whole of the main thread in a profile.
-                            LazyVStack(spacing: 2) {
-                                if let parent = model.zoomRoot?.parent,
-                                   model.zoomRoot !== model.scanRoot {
-                                    UpRow(parentName: parent.name) { model.zoomOut() }
-                                }
-                                ForEach(model.breakdown.rows.prefix(40)) { row in
-                                    BreakdownRowView(
-                                        row: row,
-                                        measure: model.measure,
-                                        isStaged: model.isStaged(row.node),
-                                        isSelected: model.selectedItem === row.node,
-                                        onToggleStaged: { model.toggleStaged(row.node) },
-                                        onShow: { model.show(row.node) },
-                                        onOpen: { model.zoom(into: row.node) },
-                                        onReveal: { model.revealInFinder(row.node) })
-                                    .equatable()
-                                }
-                                if model.breakdown.rows.count > 40 {
-                                    Text("+ \(model.breakdown.rows.count - 40) smaller items")
-                                        .font(.system(size: 10))
-                                        .foregroundStyle(.white.opacity(0.35))
-                                        .frame(maxWidth: .infinity, alignment: .leading)
-                                        .padding(.vertical, 5)
-                                }
-                            }
-                        }
+                // Lazy: a folder with dozens of children rebuilt every row on
+                // every navigation, and SwiftUI's view graph was the whole of the
+                // main thread in a profile.
+                LazyVStack(spacing: 2) {
+                    if let parent = model.zoomRoot?.parent,
+                       model.zoomRoot !== model.scanRoot {
+                        UpRow(parentName: parent.name) { model.zoomOut() }
                     }
-                    if !model.breakdown.types.isEmpty {
-                        PaneSection(title: "By file type") {
-                            LazyVStack(spacing: 3) {
-                                ForEach(model.breakdown.types) { total in
-                                    TypeRowView(total: total, of: model.breakdown.total)
-                                }
-                            }
-                        }
+                    ForEach(model.breakdown.rows.prefix(40)) { row in
+                        BreakdownRowView(
+                            row: row,
+                            measure: model.measure,
+                            isStaged: model.isStaged(row.node),
+                            isSelected: model.selectedItem === row.node,
+                            onToggleStaged: { model.toggleStaged(row.node) },
+                            onShow: { model.show(row.node) },
+                            onOpen: { model.zoom(into: row.node) },
+                            onReveal: { model.revealInFinder(row.node) })
+                        .equatable()
+                    }
+                    if model.breakdown.rows.count > 40 {
+                        Text("+ \(model.breakdown.rows.count - 40) smaller items")
+                            .font(.system(size: 10))
+                            .foregroundStyle(.white.opacity(0.35))
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .padding(.vertical, 5)
                     }
                 }
                 .padding(12)
@@ -413,6 +400,22 @@ private struct BreakdownPane: View {
             }
             .animation(.snappy(duration: 0.2), value: model.zoomRoot?.objectID)
 
+            // Outside the scroll view: the type summary describes the whole
+            // folder, so it should not scroll away with the list it summarises.
+            if !model.breakdown.types.isEmpty {
+                Divider().overlay(Color.hairline)
+                VStack(alignment: .leading, spacing: 5) {
+                    Overline(text: "By file type")
+                    VStack(spacing: 3) {
+                        ForEach(model.breakdown.types) { total in
+                            TypeRowView(total: total, of: model.breakdown.total)
+                        }
+                    }
+                }
+                .padding(.horizontal, 12)
+                .padding(.vertical, 10)
+            }
+
             Divider().overlay(Color.hairline)
             TrashTray(model: model, working: working, onTrash: onTrash)
         }
@@ -420,23 +423,6 @@ private struct BreakdownPane: View {
     }
 }
 
-private struct PaneSection<Content: View>: View {
-    let title: String
-    @ViewBuilder var content: Content
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 6) {
-            Overline(text: title)
-            content
-        }
-    }
-}
-
-/// A row in the contents list.
-///
-/// Takes plain values rather than observing the model: as an observer, every
-/// row re-evaluated on any model change at all — hovering a tile invalidated the
-/// whole sidebar. `Equatable` lets SwiftUI skip rows whose inputs did not move.
 private struct BreakdownRowView: View, Equatable {
     let row: BreakdownRow
     let measure: SizeMeasure
