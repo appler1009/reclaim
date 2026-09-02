@@ -14,6 +14,12 @@ let package = Package(
             dependencies: [.product(name: "LogShip", package: "LogShip")],
             path: "Sources/DiskMap",
             swiftSettings: [.swiftLanguageMode(.v5)]
+        ),
+        .testTarget(
+            name: "ReclaimTests",
+            dependencies: ["DiskMap"],
+            path: "Tests/ReclaimTests",
+            swiftSettings: [.swiftLanguageMode(.v5)]
         )
     ]
 )
