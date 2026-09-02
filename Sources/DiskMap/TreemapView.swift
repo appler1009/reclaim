@@ -36,8 +36,7 @@ final class TreemapView: NSView {
     private var trackingArea: NSTrackingArea?
     private var transition: TreemapTransition?
     private var transitionTimer: Timer?
-    private var scrollAccumulator: CGFloat = 0
-    private var scrollCooldownEnds = Date.distantPast
+    private var scrollNavigator = ScrollNavigator()
 
     var measure: SizeMeasure = .physical { didSet { rebuild() } }
 
@@ -188,6 +187,7 @@ final class TreemapView: NSView {
             layout = TreemapLayout.build(root: root, in: box, measure: measure,
                                          minimumArea: minimumArea, maximumDepth: 1)
             expandedStaged = nil
+            scrollNavigator.reset()
             lastLayoutDuration = Double(DispatchTime.now().uptimeNanoseconds - started) / 1e9
             refreshHoverForNewLayout()
             needsDisplay = true
@@ -416,23 +416,20 @@ final class TreemapView: NSView {
     /// under the pointer, scrolling up comes back out — the content moves the way
     /// the fingers do, as when scrolling down a page to go deeper into it.
     override func scrollWheel(with event: NSEvent) {
-        guard event.deltaY != 0 || event.scrollingDeltaY != 0 else { return }
         let delta = event.hasPreciseScrollingDeltas ? event.scrollingDeltaY / 8 : event.deltaY
-        scrollAccumulator += delta
-
-        // One step per gesture burst, or a flick crosses several levels at once.
-        guard abs(scrollAccumulator) >= 2.5, Date() >= scrollCooldownEnds else { return }
-        let goingIn = scrollAccumulator < 0
-        scrollAccumulator = 0
-        scrollCooldownEnds = Date().addingTimeInterval(0.28)
-
-        if goingIn {
+        guard let step = scrollNavigator.accept(delta: delta,
+                                                isMomentum: event.momentumPhase != [],
+                                                isGestureStart: event.phase == .began) else {
+            return
+        }
+        switch step {
+        case .deeper:
             let point = convert(event.locationInWindow, from: nil)
             guard let cell = layout.item(at: point), cell.item.isDirectory,
                   !cell.item.children.isEmpty else { return }
             hovered = nil
             delegate?.treemap(self, didActivate: cell.item)
-        } else {
+        case .out:
             hovered = nil
             delegate?.treemapDidRequestUp(self)
         }
