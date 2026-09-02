@@ -5,7 +5,10 @@ cd "$(dirname "$0")/.."
 
 CONFIG="${1:-release}"
 APP="dist/Reclaim.app"
-TEAM_ID="${TEAM_ID:-TN2RQ5P647}"
+# Left unset on purpose: whoever builds this signs as themselves. With no team
+# given, the first Developer ID identity in the keychain is used, and with none
+# at all the build is ad-hoc signed — which runs locally and nowhere else.
+TEAM_ID="${TEAM_ID:-}"
 BUNDLE_ID="${BUNDLE_ID:-com.appler.reclaim}"
 
 # The marketing version lives in VERSION, one line, edited by hand for a release.
@@ -66,8 +69,13 @@ cat > "$APP/Contents/Info.plist" <<PLIST
 PLIST
 
 # Prefer the Developer ID identity (distributable, notarizable); fall back to ad-hoc.
-IDENTITY="$(security find-identity -v -p codesigning \
-  | sed -n "s/.*\"\(Developer ID Application: .*(${TEAM_ID})\)\".*/\1/p" | head -1)"
+if [ -n "$TEAM_ID" ]; then
+  IDENTITY="$(security find-identity -v -p codesigning \
+    | sed -n "s/.*\"\(Developer ID Application: .*(${TEAM_ID})\)\".*/\1/p" | head -1)"
+else
+  IDENTITY="$(security find-identity -v -p codesigning \
+    | sed -n "s/.*\"\(Developer ID Application: .*\)\".*/\1/p" | head -1)"
+fi
 
 if [ -n "$IDENTITY" ]; then
   codesign --force --options runtime --timestamp \
@@ -75,7 +83,7 @@ if [ -n "$IDENTITY" ]; then
     --sign "$IDENTITY" "$APP"
   echo "signed with: $IDENTITY"
 else
-  echo "warning: no Developer ID identity for team $TEAM_ID; signing ad-hoc" >&2
+  echo "warning: no Developer ID identity found${TEAM_ID:+ for team $TEAM_ID}; signing ad-hoc" >&2
   codesign --force --sign - "$APP"
 fi
 

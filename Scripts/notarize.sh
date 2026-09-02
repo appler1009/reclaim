@@ -3,7 +3,7 @@
 #
 # One-time setup (stores an app-specific password in the keychain):
 #   xcrun notarytool store-credentials reclaim-notary \
-#     --apple-id <your-apple-id> --team-id TN2RQ5P647 --password <app-specific-password>
+#     --apple-id <your-apple-id> --team-id <your-team-id> --password <app-specific-password>
 # App-specific passwords come from https://account.apple.com → Sign-In and Security.
 set -euo pipefail
 cd "$(dirname "$0")/.."
