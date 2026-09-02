@@ -404,12 +404,9 @@ private struct BreakdownPane: View {
             // folder, so it should not scroll away with the list it summarises.
             if !model.breakdown.types.isEmpty {
                 Divider().overlay(Color.hairline)
-                VStack(alignment: .leading, spacing: 5) {
-                    Overline(text: "By file type")
-                    VStack(spacing: 3) {
-                        ForEach(model.breakdown.types) { total in
-                            TypeRowView(total: total, of: model.breakdown.total)
-                        }
+                VStack(spacing: 3) {
+                    ForEach(model.breakdown.types) { total in
+                        TypeRowView(total: total, of: model.breakdown.total)
                     }
                 }
                 .padding(.horizontal, 12)
@@ -533,13 +530,11 @@ private struct TrashTray: View {
 
     var body: some View {
         VStack(spacing: 8) {
-            HStack {
-                Text(model.staged.isEmpty
-                     ? "Select anything to remove it"
-                     : "\(model.staged.count) selected · \(ByteFormat.string(model.stagedBytes))")
-                    .font(.system(size: 11)).foregroundStyle(.white.opacity(0.55))
-                Spacer()
-                if !model.staged.isEmpty {
+            if !model.staged.isEmpty {
+                HStack {
+                    Text("\(model.staged.count) selected · \(ByteFormat.string(model.stagedBytes))")
+                        .font(.system(size: 11)).foregroundStyle(.white.opacity(0.55))
+                    Spacer()
                     Button("Clear") { model.clearStaging() }
                         .buttonStyle(.plain)
                         .font(.system(size: 11)).foregroundStyle(.white.opacity(0.45))
