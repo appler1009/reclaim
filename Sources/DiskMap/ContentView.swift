@@ -51,14 +51,32 @@ struct ContentView: View {
         // menu when several scans are open.
         .navigationTitle(windowTitle)
         .navigationSubtitle(windowSubtitle)
+        // The ⌘↑ menu command posts this; it used to be handled by the breadcrumb row.
+        .onReceive(NotificationCenter.default.publisher(for: .reclaimNavigateUp)) { _ in
+            model.zoomOut()
+        }
         .preferredColorScheme(.dark)
         .toolbar {
             ToolbarItem(placement: .navigation) {
-                Button { model.zoomOut() } label: {
+                // Click goes up one level; holding it offers the whole trail,
+                // which is what the breadcrumb bar used to be for.
+                Menu {
+                    ForEach(Array(model.breadcrumb.dropLast().enumerated().reversed()),
+                            id: \.offset) { index, node in
+                        Button {
+                            model.show(node)
+                        } label: {
+                            Label(index == 0 ? model.scanTargetName : node.name,
+                                  systemImage: index == 0 ? "externaldrive" : "folder")
+                        }
+                    }
+                } label: {
                     Label("Up", systemImage: "arrow.up.left")
+                } primaryAction: {
+                    model.zoomOut()
                 }
                 .disabled(model.zoomRoot == nil || model.zoomRoot === model.scanRoot)
-                .help("Go to the enclosing folder (⌘↑)")
+                .help("Go to the enclosing folder (⌘↑). Hold to jump further up.")
             }
             ToolbarItemGroup(placement: .primaryAction) {
                 if model.phase == .ready {
@@ -257,8 +275,6 @@ private struct HeaderBar: View {
             }
 
             Spacer(minLength: 12)
-
-            if model.phase == .ready { LegendStrip() }
         }
         .padding(.horizontal, 18)
         .frame(height: 56)
@@ -283,59 +299,11 @@ private struct MapPane: View {
 
     var body: some View {
         VStack(spacing: 0) {
-            HStack(spacing: 6) {
-                ScrollView(.horizontal, showsIndicators: false) {
-                    HStack(spacing: 4) {
-                        ForEach(Array(model.breadcrumb.enumerated()), id: \.offset) { index, node in
-                            if index > 0 {
-                                Image(systemName: "chevron.right")
-                                    .font(.system(size: 8, weight: .bold))
-                                    .foregroundStyle(.white.opacity(0.25))
-                            }
-                            Button { model.show(node) } label: {
-                                Text(index == 0 ? model.scanTargetName : node.name)
-                                    .font(.system(size: 11, weight: index == model.breadcrumb.count - 1 ? .semibold : .regular))
-                                    .foregroundStyle(.white.opacity(index == model.breadcrumb.count - 1 ? 0.92 : 0.5))
-                            }
-                            .buttonStyle(.plain)
-                        }
-                    }
-                }
-                Spacer(minLength: 8)
-            }
-            .padding(.horizontal, 14)
-            .frame(height: 32)
-            .background(Color.panel.opacity(0.6))
-            .animation(.snappy(duration: 0.2), value: model.zoomRoot?.objectID)
-
             TreemapRepresentable(model: model, isResizing: isResizing)
                 .background(Color.ink)
                 .clipped()
 
             HoverBar(model: model, hover: model.hover)
-        }
-        .onReceive(NotificationCenter.default.publisher(for: .reclaimNavigateUp)) { _ in
-            model.zoomOut()
-        }
-    }
-}
-
-private struct LegendStrip: View {
-    private let families: [FileFamily] = [.code, .media, .image, .archive,
-                                          .document, .app, .data, .system, .other]
-
-    var body: some View {
-        HStack(spacing: 9) {
-            ForEach(families, id: \.self) { family in
-                HStack(spacing: 4) {
-                    RoundedRectangle(cornerRadius: 2)
-                        .fill(Color(nsColor: family.color))
-                        .frame(width: 8, height: 8)
-                    Text(family.label)
-                        .font(.system(size: 9.5))
-                        .foregroundStyle(.white.opacity(0.45))
-                }
-            }
         }
     }
 }
