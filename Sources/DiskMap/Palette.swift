@@ -1,0 +1,69 @@
+import AppKit
+
+/// Broad file families, used for the treemap's base colouring.
+enum FileFamily: String, CaseIterable {
+    case code, media, image, archive, document, app, data, system, other
+
+    static func of(_ item: FileItem) -> FileFamily {
+        if item.isDirectory { return .other }
+        switch item.ext {
+        case "swift", "c", "h", "m", "mm", "cpp", "hpp", "rs", "go", "py", "rb", "js",
+             "ts", "tsx", "jsx", "java", "kt", "sh", "json", "yml", "yaml", "toml", "html", "css":
+            return .code
+        case "mp4", "mov", "mkv", "avi", "m4v", "webm", "mp3", "wav", "aac", "flac", "m4a", "aiff":
+            return .media
+        case "png", "jpg", "jpeg", "gif", "heic", "tiff", "raw", "psd", "svg", "webp", "cr2", "dng":
+            return .image
+        case "zip", "gz", "bz2", "xz", "7z", "rar", "tar", "dmg", "pkg", "iso", "ipa", "jar":
+            return .archive
+        case "pdf", "doc", "docx", "xls", "xlsx", "ppt", "pptx", "txt", "md", "rtf", "epub", "pages":
+            return .document
+        case "app", "framework", "dylib", "so", "o", "a", "bundle", "kext", "exe":
+            return .app
+        case "db", "sqlite", "sqlite3", "realm", "parquet", "csv", "bin", "dat", "pack":
+            return .data
+        case "log", "plist", "cache", "lock", "pid", "tmp":
+            return .system
+        default:
+            return .other
+        }
+    }
+
+    var color: NSColor {
+        switch self {
+        case .code:     return NSColor(srgbRed: 0.36, green: 0.78, blue: 0.98, alpha: 1)
+        case .media:    return NSColor(srgbRed: 0.78, green: 0.44, blue: 0.98, alpha: 1)
+        case .image:    return NSColor(srgbRed: 0.32, green: 0.86, blue: 0.70, alpha: 1)
+        case .archive:  return NSColor(srgbRed: 0.98, green: 0.72, blue: 0.30, alpha: 1)
+        case .document: return NSColor(srgbRed: 0.58, green: 0.66, blue: 0.98, alpha: 1)
+        case .app:      return NSColor(srgbRed: 0.98, green: 0.45, blue: 0.55, alpha: 1)
+        case .data:     return NSColor(srgbRed: 0.52, green: 0.90, blue: 0.44, alpha: 1)
+        case .system:   return NSColor(srgbRed: 0.60, green: 0.62, blue: 0.70, alpha: 1)
+        case .other:    return NSColor(srgbRed: 0.45, green: 0.50, blue: 0.60, alpha: 1)
+        }
+    }
+
+    var label: String { rawValue.capitalized }
+}
+
+extension WasteCategory {
+    var accent: NSColor {
+        switch self {
+        case .buildArtifacts:   return NSColor(srgbRed: 1.00, green: 0.42, blue: 0.36, alpha: 1)
+        case .developerCaches:  return NSColor(srgbRed: 1.00, green: 0.58, blue: 0.25, alpha: 1)
+        case .appCaches:        return NSColor(srgbRed: 1.00, green: 0.78, blue: 0.28, alpha: 1)
+        case .trash:            return NSColor(srgbRed: 0.98, green: 0.35, blue: 0.62, alpha: 1)
+        case .installers:       return NSColor(srgbRed: 0.72, green: 0.52, blue: 1.00, alpha: 1)
+        case .staleDownloads:   return NSColor(srgbRed: 0.40, green: 0.72, blue: 1.00, alpha: 1)
+        case .logs:             return NSColor(srgbRed: 0.55, green: 0.60, blue: 0.72, alpha: 1)
+        case .bigAndOld:        return NSColor(srgbRed: 0.30, green: 0.88, blue: 0.78, alpha: 1)
+        }
+    }
+}
+
+enum Theme {
+    static let background = NSColor(srgbRed: 0.055, green: 0.063, blue: 0.086, alpha: 1)
+    static let panel = NSColor(srgbRed: 0.086, green: 0.098, blue: 0.129, alpha: 1)
+    static let hairline = NSColor(white: 1, alpha: 0.08)
+    static let accent = NSColor(srgbRed: 1.00, green: 0.42, blue: 0.36, alpha: 1)
+}
