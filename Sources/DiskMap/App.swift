@@ -3,6 +3,10 @@ import SwiftUI
 @main
 struct DiskMapApp: App {
     @NSApplicationDelegateAdaptor(AppDelegate.self) private var delegate
+    /// Owned here rather than by the view, so the menu bar can act on it: menu
+    /// commands live in the scene, and reaching a view's state from them would
+    /// otherwise mean routing every command through a notification.
+    @StateObject private var model = AppModel()
 
     init() {
         CLI.runIfRequested()
@@ -13,7 +17,7 @@ struct DiskMapApp: App {
 
     var body: some Scene {
         WindowGroup("Reclaim") {
-            ContentView()
+            ContentView(model: model)
         }
         .defaultSize(width: 1320, height: 860)
         // Without this the greedy content makes SwiftUI open the window at
@@ -23,12 +27,51 @@ struct DiskMapApp: App {
         // window styling below makes translucent.
         .windowToolbarStyle(.unified(showsTitle: true))
         .commands {
-            CommandGroup(replacing: .newItem) {}
-            CommandGroup(after: .sidebar) {
-                Button("Enclosing Folder") {
-                    NotificationCenter.default.post(name: .reclaimNavigateUp, object: nil)
+            // The File menu is where a document-shaped app is expected to offer
+            // "open something else", and this app's document is a scan.
+            CommandGroup(replacing: .newItem) {
+                Menu("Scan Volume") {
+                    ForEach(model.volumes) { volume in
+                        Button {
+                            model.scan(volume: volume)
+                        } label: {
+                            Text("\(volume.name) — \(ByteFormat.string(volume.available)) free")
+                        }
+                    }
                 }
-                .keyboardShortcut(.upArrow, modifiers: .command)
+                Button("Scan Home Folder") {
+                    model.scan(FileManager.default.homeDirectoryForCurrentUser)
+                }
+                .keyboardShortcut("h", modifiers: [.command, .shift])
+
+                Button("Scan Folder…") { model.chooseFolder() }
+                    .keyboardShortcut("o", modifiers: .command)
+
+                Divider()
+
+                Button("Rescan") { model.rescan() }
+                    .keyboardShortcut("r", modifiers: .command)
+                    .disabled(model.scanRoot == nil || model.isScanning)
+
+                Button("Stop Scanning") { model.cancelScan() }
+                    .keyboardShortcut(".", modifiers: .command)
+                    .disabled(!model.isScanning)
+
+                Divider()
+
+                Button("Reveal in Finder") {
+                    if let item = model.selectedItem ?? model.zoomRoot { model.revealInFinder(item) }
+                }
+                .keyboardShortcut("r", modifiers: [.command, .shift])
+                .disabled(model.scanRoot == nil)
+
+                Button("Open Trash") { model.revealTrashInFinder() }
+                    .disabled(model.trash.items == 0)
+            }
+            CommandGroup(after: .sidebar) {
+                Button("Enclosing Folder") { model.zoomOut() }
+                    .keyboardShortcut(.upArrow, modifiers: .command)
+                    .disabled(model.zoomRoot == nil || model.zoomRoot === model.scanRoot)
             }
         }
     }
@@ -202,7 +245,3 @@ final class WindowSizeGuard {
     }
 }
 
-extension Notification.Name {
-    /// Posted by the ⌘↑ menu command; handled by the map pane.
-    static let reclaimNavigateUp = Notification.Name("reclaim.navigateUp")
-}

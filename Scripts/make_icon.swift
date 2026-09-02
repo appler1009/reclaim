@@ -15,7 +15,9 @@ let tiles: [Tile] = [
     Tile(x: 0.00, y: 0.58, w: 0.32, h: 0.42, color: NSColor(srgbRed: 0.98, green: 0.72, blue: 0.30, alpha: 1)),
     Tile(x: 0.32, y: 0.58, w: 0.34, h: 0.22, color: NSColor(srgbRed: 0.52, green: 0.90, blue: 0.44, alpha: 1)),
     Tile(x: 0.32, y: 0.80, w: 0.34, h: 0.20, color: NSColor(srgbRed: 0.58, green: 0.66, blue: 0.98, alpha: 1)),
-    Tile(x: 0.66, y: 0.58, w: 0.34, h: 0.42, color: NSColor(white: 0.32, alpha: 1)),
+    // The app's "other" slate rather than near-black: at icon size a very dark
+    // tile reads as a hole punched in the artwork.
+    Tile(x: 0.66, y: 0.58, w: 0.34, h: 0.42, color: NSColor(srgbRed: 0.45, green: 0.50, blue: 0.60, alpha: 1)),
 ]
 
 func render(size: Int) -> Data? {
@@ -25,26 +27,30 @@ func render(size: Int) -> Data? {
                                   bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue)
     else { return nil }
 
-    let inset = dimension * 0.08
-    let board = CGRect(x: inset, y: inset, width: dimension - inset * 2, height: dimension - inset * 2)
+    // The tiles are the icon: they run to the edge of the rounded square, with no
+    // frame or backing colour around them, and they meet each other exactly — the
+    // same way the map inside the app does.
+    let board = CGRect(x: 0, y: 0, width: dimension, height: dimension)
     let radius = dimension * 0.22
-    let rounded = CGPath(roundedRect: CGRect(x: 0, y: 0, width: dimension, height: dimension),
-                         cornerWidth: radius, cornerHeight: radius, transform: nil)
-    context.addPath(rounded)
+    context.addPath(CGPath(roundedRect: board, cornerWidth: radius, cornerHeight: radius,
+                           transform: nil))
     context.clip()
-    context.setFillColor(NSColor(srgbRed: 0.055, green: 0.063, blue: 0.086, alpha: 1).cgColor)
-    context.fill(CGRect(x: 0, y: 0, width: dimension, height: dimension))
 
-    let gap = max(1, dimension * 0.012)
     for tile in tiles {
-        let rect = CGRect(x: board.minX + tile.x * board.width + gap,
-                          y: board.minY + tile.y * board.height + gap,
-                          width: tile.w * board.width - gap * 2,
-                          height: tile.h * board.height - gap * 2)
+        let rect = CGRect(x: tile.x * board.width,
+                          y: tile.y * board.height,
+                          width: tile.w * board.width,
+                          height: tile.h * board.height)
         context.setFillColor(tile.color.cgColor)
         context.fill(rect)
-        context.setFillColor(NSColor(white: 1, alpha: 0.16).cgColor)
-        context.fill(CGRect(x: rect.minX, y: rect.maxY - gap, width: rect.width, height: gap))
+
+        // The same inside-the-tile shading the map draws, so edges read as edges
+        // without carving space out between them.
+        let edge = max(1, dimension * 0.006)
+        context.setFillColor(NSColor(white: 1, alpha: 0.14).cgColor)
+        context.fill(CGRect(x: rect.minX, y: rect.maxY - edge, width: rect.width, height: edge))
+        context.setFillColor(NSColor(white: 0, alpha: 0.16).cgColor)
+        context.fill(CGRect(x: rect.minX, y: rect.minY, width: rect.width, height: edge))
     }
 
     guard let image = context.makeImage() else { return nil }

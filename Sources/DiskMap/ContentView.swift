@@ -2,7 +2,7 @@ import QuartzCore
 import SwiftUI
 
 struct ContentView: View {
-    @StateObject private var model = AppModel()
+    @ObservedObject var model: AppModel
     @State private var report: AppModel.DeleteReport?
     @State private var working = false
     @AppStorage(SidebarWidth.storageKey) private var storedSidebarWidth = SidebarWidth.default
@@ -52,10 +52,6 @@ struct ContentView: View {
         // menu when several scans are open.
         .navigationTitle(windowTitle)
         .navigationSubtitle(windowSubtitle)
-        // The ⌘↑ menu command posts this; it used to be handled by the breadcrumb row.
-        .onReceive(NotificationCenter.default.publisher(for: .reclaimNavigateUp)) { _ in
-            model.zoomOut()
-        }
         .preferredColorScheme(.dark)
         .toolbar {
             ToolbarItem(placement: .navigation) {
