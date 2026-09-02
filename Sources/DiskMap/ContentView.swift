@@ -54,6 +54,7 @@ struct ContentView: View {
         // menu when several scans are open.
         .navigationTitle(windowTitle)
         .navigationSubtitle(windowSubtitle)
+        .background(WindowTabTitle(title: windowTitle))
         // Points the menu bar at this window while it is in front.
         .focusedSceneValue(\.scan, model)
         .preferredColorScheme(.dark)
@@ -181,7 +182,11 @@ struct ContentView: View {
     /// The title bar names what is open; the breadcrumb below handles navigation
     /// within it, so the two do not repeat each other.
     private var windowTitle: String {
-        model.scanRoot == nil ? "Reclaim" : model.scanTargetName
+        guard model.scanRoot != nil else {
+            // Nothing scanned yet: name it for what it is waiting to become.
+            return model.isScanning ? "Scanning…" : "New Scan"
+        }
+        return model.scanTargetName
     }
 
     /// The absolute path of the folder in view — the one place it is spelled out

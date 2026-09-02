@@ -12,7 +12,9 @@ struct DiskMapApp: App {
     }
 
     var body: some Scene {
-        WindowGroup("Reclaim") {
+        // Untitled on purpose: a fixed scene title becomes the first window's
+        // tab label and then never changes.
+        WindowGroup {
             ContentView()
         }
         .defaultSize(width: 1320, height: 860)
