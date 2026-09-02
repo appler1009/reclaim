@@ -66,9 +66,12 @@ struct ContentView: View {
                 .help("Go to the enclosing folder (⌘↑). Hold for the folders above it.")
             }
             ToolbarItemGroup(placement: .primaryAction) {
+                // macOS sizes a toolbar pill to hug its label; at the default
+                // control size that leaves the text almost touching the edges.
                 if model.isScanning {
                     Button { model.cancelScan() } label: {
                         Label("Stop", systemImage: "stop.fill")
+                            .padding(.horizontal, 7)
                     }
                     .labelStyle(.titleAndIcon)
                     .help("Stop scanning and keep what has been found so far")
@@ -89,12 +92,14 @@ struct ContentView: View {
                         }
                     } label: {
                         Label(model.measure.label, systemImage: "ruler")
+                            .padding(.horizontal, 7)
                     }
                     .labelStyle(.titleAndIcon)
                     .help("Which size to report: bytes occupied on disk, or the files' logical length")
 
                     Button { model.rescan() } label: {
                         Label("Rescan", systemImage: "arrow.clockwise")
+                            .padding(.horizontal, 7)
                     }
                     .labelStyle(.titleAndIcon)
                     .help("Scan this location again")
@@ -715,6 +720,7 @@ struct ScanMenu: View {
             Button("Refresh volumes") { model.refreshVolumes() }
         } label: {
             Label("Scan", systemImage: "internaldrive")
+                .padding(.horizontal, 7)
         }
         .labelStyle(.titleAndIcon)
         .menuStyle(.borderlessButton)
