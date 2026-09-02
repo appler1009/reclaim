@@ -13,9 +13,11 @@ Pick a **volume** or a folder. Reclaim scans it and shows the folder you are loo
 as a single level of tiles, each sized by the space it takes:
 
 - **One level at a time.** Every immediate child is one labelled tile — name, size,
-  share of the folder, file count — instead of a mosaic of sub-pixel specks. Double-click
-  a tile (or click a row in the list) to go inside it; **Up**, the breadcrumb, or **⌘↑**
-  to come back out.
+  share of the folder, file count — instead of a mosaic of sub-pixel specks.
+- **Scroll to move through the tree.** Scroll down over a tile to go into it, scroll up to
+  come back out; double-click, the row list, **Up**, the breadcrumb and **⌘↑** all work too.
+  Changing level zooms: the tile you enter grows into the whole view, and going back up
+  shrinks the view into the tile it came from.
 - **Colour says what kind of thing it is.** Each tile is coloured by the kind of file it
   mostly contains — code, media, images, archives, documents, apps, data.
 - **One set of numbers.** The strip at the top always describes the folder currently in
@@ -59,6 +61,7 @@ Reclaim --scan <path>       # totals, contents largest-first, by-type summary
 Reclaim --bench <path>      # layout time vs detail level
 Reclaim --bench-draw <path> # render time vs detail level
 Reclaim --open <path>       # launch the UI straight into a scan
+Reclaim --open <path> --stress-navigate   # drive the UI and time each step
 ```
 
 ## How it works, from the inside
@@ -76,23 +79,47 @@ Reclaim --open <path>       # launch the UI straight into a scan
 
 ### Performance
 
-Measured on `~/Library` (≈270k files):
+Every number here was measured on `~/Library` (≈270k files), before and after, using the
+benchmarks built into the binary. Nothing was optimised on a hunch.
 
 | | before | after |
 |---|---|---|
-| Scan | 73 s (serial) | **2.2 s** (parallel workers) |
+| Scan | 73 s (serial) | **2.5 s** (parallel workers) |
 | Treemap layout | 436 ms | **3.2 ms** |
-| Full map render | — | **17.8 ms** |
+| Navigation step (layout + breakdown) | 88 ms worst | **0.55 ms worst** |
+| Worst UI stall while navigating | 1078 ms | **38 ms** |
+| Hover (pointer moving over the map) | full-window pass | **4 ms** |
 
-The layout win came from profiling rather than guessing: a sampling profile showed nearly
-all the time in `swift_retain`/`swift_release` and `initializeWithCopy for TreemapCell` —
-the layout struct was being copied on every recursive call, and every directory was being
-re-sorted on every pass. Building into a class, sorting children once at scan time, and
-holding cells `unowned(unsafe)` removed it. Not expanding folders whose children would each
-land on a fraction of a pixel cut the cell count from 143k to 36k, which is what made
-rendering fast enough to redraw continuously while a window is dragged.
+Each came from a profile, not a guess:
+
+- **Layout.** A sampling profile was almost entirely `swift_retain`/`swift_release` and
+  `initializeWithCopy for TreemapCell`: the layout struct was copied on every recursive
+  call and every directory re-sorted on every pass. Building into a class, sorting children
+  once at scan time, and holding cells `unowned(unsafe)` removed it. Skipping folders whose
+  children would each land on a fraction of a pixel cut cells 143k → 36k.
+- **Navigation.** Each step re-classified every file below the folder, so filename parsing
+  in `FileFamily.of` topped the profile. Folders now carry a per-family roll-up of bytes and
+  counts, computed once and reused by their parents.
+- **The UI itself.** `--stress-navigate` drives the real interface and times each step in
+  three parts. That found `URL(fileURLWithPath:)` stat-ing the disk for every row tooltip,
+  and hover changes invalidating the entire window. What remains is a ~10 ms SwiftUI pass
+  that the view tree costs even with no rows in it — the model update is 0.04 ms and the map
+  draw is 0.01 ms.
 
 Scan totals are byte-exact against `du -sk`.
+
+## Tests
+
+```sh
+swift test        # 44 tests
+```
+
+They cover the parts that carry the numbers: the scanner against real temporary directories
+(totals against `du`, hard links, hidden files, unreadable directories, symlinks,
+cancellation), the layout (tiles cover their parent with no gaps and no overlaps, areas
+proportional to size, crowded folders collapse), path building without touching the
+filesystem, the per-family roll-ups including after a deletion, and the zoom transform at
+both ends of the movement.
 
 ## Requirements
 
