@@ -79,6 +79,40 @@ struct TrashTests {
         #expect(model.zoomRoot === model.scanRoot, "the view must not be left on a deleted folder")
     }
 
+    @Test func totalsTickUpAsEachItemMoves() async throws {
+        let fixture = try Fixture()
+        defer { fixture.cleanUp() }
+        for index in 0 ..< 4 {
+            try fixture.file("item-\(index).bin", bytes: 20_000 - index * 1_000)
+        }
+
+        let model = AppModel()
+        let root = try #require(Scanner.scan(url: fixture.root, options: ScanOptions(),
+                                             session: ScanSession()))
+        model.adoptForTesting(root: root, url: fixture.root)
+
+        // Observe the running totals from inside the trash operation itself.
+        var trashBytesSeen: [UInt64] = []
+        var stagedCountsSeen: [Int] = []
+        model.trashItem = { _ in
+            trashBytesSeen.append(model.trash.bytes)
+            stagedCountsSeen.append(model.staged.count)
+        }
+
+        model.breakdown.rows.forEach { model.toggleStaged($0.node) }
+        #expect(model.staged.count == 4)
+        _ = await model.trashStaged()
+
+        // Each call saw the totals from the items already moved, so they were
+        // published as the run progressed rather than all at the end.
+        #expect(trashBytesSeen.count == 4)
+        #expect(trashBytesSeen == trashBytesSeen.sorted())
+        #expect(trashBytesSeen.first == 0)
+        #expect(trashBytesSeen.last ?? 0 > 0)
+        #expect(stagedCountsSeen == [4, 3, 2, 1], "the selection should shrink as items go")
+        #expect(model.trash.items == 4)
+    }
+
     @Test func selectingAFolderSupersedesItsContents() throws {
         let fixture = try Fixture()
         defer { fixture.cleanUp() }
@@ -98,16 +132,6 @@ struct TrashTests {
         #expect(model.staged.count == 1)
     }
 
-    @Test func confirmationPreferenceRoundTrips() {
-        let model = AppModel()
-        let original = model.confirmsTrash
-        defer { model.confirmsTrash = original }
-
-        model.confirmsTrash = false
-        #expect(model.confirmsTrash == false)
-        model.confirmsTrash = true
-        #expect(model.confirmsTrash)
-    }
 }
 
 @Suite("Rescan")

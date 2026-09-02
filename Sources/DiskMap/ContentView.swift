@@ -32,7 +32,7 @@ struct ContentView: View {
                         })
                     BreakdownPane(model: model,
                                   working: working,
-                                  onTrash: { confirmThenTrash() })
+                                  onTrash: { performTrash() })
                         .frame(width: sidebarWidth)
                 }
             }
@@ -79,28 +79,17 @@ struct ContentView: View {
         }
         // Toolbar items default to icon-only; these read better with their words.
         .toolbarTitleDisplayMode(.inline)
-        .alert("Moved \(ByteFormat.string(report?.bytes ?? 0)) to the Trash",
+        .alert("Some items could not be moved to the Trash",
                isPresented: Binding(get: { report != nil }, set: { if !$0 { report = nil } })) {
             Button("Done") { report = nil }
         } message: {
             if let report {
-                Text(report.failures.isEmpty
-                     ? "\(report.trashed.count) item\(report.trashed.count == 1 ? "" : "s") moved to the Trash. Empty the Trash to free the space for good."
-                     : "\(report.trashed.count) moved to the Trash. \(report.failures.count) could not be removed:\n"
-                       + report.failures.prefix(3).map { "· \($0.name): \($0.reason)" }.joined(separator: "\n"))
+                Text("\(report.trashed.count) moved, \(report.failures.count) could not be:\n"
+                     + report.failures.prefix(4)
+                        .map { "· \($0.name): \($0.reason)" }
+                        .joined(separator: "\n"))
             }
         }
-    }
-
-    /// Asks first, unless the user has turned confirmations off.
-    private func confirmThenTrash() {
-        guard model.confirmsTrash else { performTrash() ; return }
-        let answer = TrashConfirmation.ask(items: model.staged,
-                                           bytes: model.stagedBytes,
-                                           measure: model.measure)
-        if answer.stopAsking { model.confirmsTrash = false }
-        guard answer.proceed else { return }
-        performTrash()
     }
 
     /// `--stress-resize` sweeps the divider through the same state path a real
@@ -142,8 +131,9 @@ struct ContentView: View {
         Task {
             let result = await model.trashStaged()
             working = false
-            // With confirmations off, stay quiet unless something went wrong.
-            if !result.failures.isEmpty || model.confirmsTrash { report = result }
+            // Success needs no interruption: the tray and the header's trash
+            // figure both say what happened. Failures still need attention.
+            if !result.failures.isEmpty { report = result }
         }
     }
 }
@@ -206,6 +196,22 @@ private struct HeaderBar: View {
                     Metric(value: ByteFormat.string(model.volumeFree), caption: "Free on volume")
                         .help("Space still available on the whole disk this scan came from — not part of the totals to the left.")
                 }
+                if model.trash.items > 0 {
+                    Button { model.revealTrashInFinder() } label: {
+                        HStack(spacing: 5) {
+                            Image(systemName: "trash.fill")
+                                .font(.system(size: 11))
+                                .foregroundStyle(Color.ember.opacity(0.9))
+                            Metric(value: ByteFormat.string(model.trash.bytes),
+                                   caption: "In trash",
+                                   tint: Color.ember.opacity(0.95))
+                                .contentTransition(.numericText())
+                                .animation(.snappy(duration: 0.22), value: model.trash.bytes)
+                        }
+                    }
+                    .buttonStyle(.plain)
+                    .help(trashHelp)
+                }
                 if let unreadable = model.scanRoot?.unreadableCount, unreadable > 0 {
                     Button { model.openFullDiskAccessSettings() } label: {
                         HStack(spacing: 5) {
@@ -227,6 +233,15 @@ private struct HeaderBar: View {
         .padding(.horizontal, 18)
         .frame(height: 56)
         .background(Color.panel)
+    }
+
+    private var trashHelp: String {
+        let base = "\(model.trash.items) item\(model.trash.items == 1 ? "" : "s") in this volume's Trash, "
+            + "holding \(ByteFormat.string(model.trash.bytes)). "
+            + "That space comes back when the Trash is emptied."
+        guard model.trashedThisSession > 0 else { return base + " Click to open it in Finder." }
+        return base + " \(ByteFormat.string(model.trashedThisSession)) of it was moved here in this session."
+            + " Click to open it in Finder."
     }
 }
 
@@ -590,18 +605,20 @@ private struct TrashTray: View {
             .buttonStyle(PrimaryButtonStyle(enabled: !model.staged.isEmpty && !working))
             .disabled(model.staged.isEmpty || working)
 
-            if model.confirmsTrash {
-                Text("Items go to the Trash — you can put them back.")
-                    .font(.system(size: 10)).foregroundStyle(.white.opacity(0.33))
-            } else {
-                // The suppression checkbox needs a way back, or it is a one-way door.
-                Button { model.confirmsTrash = true } label: {
-                    Text("Confirmation off · ask me again")
+            // No confirmation step: moving to the Trash is reversible, the button
+            // says how much it will move, and the header shows what is in there.
+            if model.trashedThisSession > 0 {
+                Button { model.revealTrashInFinder() } label: {
+                    Text("Moved \(ByteFormat.string(model.trashedThisSession)) to the Trash this session · show")
                         .font(.system(size: 10))
-                        .foregroundStyle(Color.caution.opacity(0.85))
+                        .foregroundStyle(Color.ember.opacity(0.8))
+                        .lineLimit(1).truncationMode(.middle)
                 }
                 .buttonStyle(.plain)
-                .help("Show the confirmation dialog before moving items to the Trash again")
+                .help("Open the Trash in Finder, where you can put items back or empty it")
+            } else {
+                Text("Items go to the Trash — you can put them back.")
+                    .font(.system(size: 10)).foregroundStyle(.white.opacity(0.33))
             }
         }
         .padding(12)

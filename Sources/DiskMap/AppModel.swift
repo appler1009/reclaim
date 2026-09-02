@@ -37,10 +37,14 @@ final class AppModel: ObservableObject {
     let hover = HoverState()
     private(set) var selectedItem: FileItem?
     @Published var measure: SizeMeasure = .physical
-    @Published var lastReclaimed: UInt64 = 0
     @Published var scannedURL: URL?
     @Published var volumeCapacity: UInt64 = 0
     @Published var volumeFree: UInt64 = 0
+    /// What is sitting in this volume's Trash: spoken for, but not freed until
+    /// the Trash is emptied.
+    @Published var trash = TrashInspector.Contents()
+    /// How much of that this session put there.
+    @Published var trashedThisSession: UInt64 = 0
     @Published var volumes: [VolumeInfo] = []
     /// Whole-disk scans are meaningless without Full Disk Access; we probe for it
     /// so the UI can say so before the user waits for a half-empty result.
@@ -55,16 +59,6 @@ final class AppModel: ObservableObject {
         try FileManager.default.trashItem(at: url, resultingItemURL: &resulting)
     }
 
-    /// Whether to ask before moving things to the Trash. Off once the user ticks
-    /// "Don't ask again"; the tray offers a way back.
-    var confirmsTrash: Bool {
-        get { UserDefaults.standard.object(forKey: Self.confirmsTrashKey) as? Bool ?? true }
-        set {
-            UserDefaults.standard.set(newValue, forKey: Self.confirmsTrashKey)
-            notify()
-        }
-    }
-    private static let confirmsTrashKey = "confirmsTrash"
     private var volumeObservers: [NSObjectProtocol] = []
 
     init() {
@@ -107,6 +101,25 @@ final class AppModel: ObservableObject {
 
     func refreshVolumes() {
         volumes = VolumeScanner.mounted()
+    }
+
+    /// Measured off the main thread: the Trash can hold a lot of files.
+    func refreshTrashSize() {
+        guard let url = scannedURL else { return }
+        DispatchQueue.global(qos: .utility).async { [weak self] in
+            let contents = TrashInspector.contents(forVolumeContaining: url)
+            DispatchQueue.main.async {
+                guard let self else { return }
+                self.trash = contents
+                Log.debug("trash measured", ["bytes": "\(contents.bytes)",
+                                             "items": "\(contents.items)"])
+            }
+        }
+    }
+
+    func revealTrashInFinder() {
+        guard let scannedURL else { return }
+        TrashInspector.revealInFinder(forVolumeContaining: scannedURL)
     }
 
     /// Only an actual read tells the truth: `isReadableFile` answers POSIX
@@ -210,6 +223,7 @@ final class AppModel: ObservableObject {
                 self.refreshBreakdown()
                 self.phase = .ready
                 self.startNavigationStressIfRequested()
+                self.refreshTrashSize()
                 Log.info("scan finished", [
                     "path": url.path,
                     "seconds": String(format: "%.2f", Date().timeIntervalSince(startedAt)),
@@ -300,36 +314,71 @@ final class AppModel: ObservableObject {
     }
 
     /// Moves every selected item to the Trash. Nothing is deleted outright.
+    ///
+    /// Items are moved one at a time, with the file operation itself run off the
+    /// main thread and the totals updated between each. That is what makes a
+    /// multi-item removal visibly tick along — map, list and the header's trash
+    /// figure all follow it — instead of the window sitting still and then
+    /// jumping once at the end.
     func trashStaged() async -> DeleteReport {
         let items = staged
         Log.info("trash requested", ["items": "\(items.count)", "bytes": "\(stagedBytes)"])
         var report = DeleteReport()
+
         for node in items {
             let bytes = node.size(measure)
+            let url = URL(fileURLWithPath: node.path, isDirectory: node.isDirectory)
             do {
-                try trashItem(URL(fileURLWithPath: node.path, isDirectory: node.isDirectory))
+                try await moveToTrash(url)
                 report.trashed.append((node.name, bytes))
                 report.bytes += bytes
                 node.parent?.remove(child: node)
+
+                // Everything the UI reads, updated for this one item.
+                staged.removeAll { $0 === node }
+                treeRevision += 1
+                trashedThisSession += bytes
+                // The bytes are not free yet — they moved into the Trash.
+                trash.bytes += bytes
+                trash.items += 1
+                if let zoomRoot, zoomRoot.parent == nil, zoomRoot !== scanRoot {
+                    self.zoomRoot = scanRoot   // the folder in view was the one removed
+                }
+                refreshBreakdown()             // announces the batch
             } catch {
                 report.failures.append((node.name, error.localizedDescription))
                 Log.error("trash failed", ["path": node.path,
                                            "error": error.localizedDescription])
             }
         }
+
         Log.info("trash finished", ["trashed": "\(report.trashed.count)",
                                     "failed": "\(report.failures.count)",
                                     "bytes": "\(report.bytes)"])
         staged.removeAll()
-        treeRevision += 1
-        lastReclaimed += report.bytes
-        volumeFree += report.bytes
         selectedItem = nil
         hover.set(nil)
-        // A removed node may be the folder currently in view.
-        if let zoomRoot, zoomRoot.parent == nil, zoomRoot !== scanRoot { self.zoomRoot = scanRoot }
         refreshBreakdown()
+        // Re-measure rather than trusting the running total: the Trash may hold
+        // more than this session put there.
+        refreshTrashSize()
         return report
+    }
+
+    /// Runs the (blocking) file operation off the main thread, so the interface
+    /// keeps drawing while a large folder is moved.
+    private func moveToTrash(_ url: URL) async throws {
+        let operation = trashItem
+        try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
+            DispatchQueue.global(qos: .userInitiated).async {
+                do {
+                    try operation(url)
+                    continuation.resume()
+                } catch {
+                    continuation.resume(throwing: error)
+                }
+            }
+        }
     }
 
     // MARK: - Navigation
