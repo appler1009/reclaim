@@ -197,6 +197,9 @@ private struct HeaderBar: View {
                         .help("Space still available on the whole disk this scan came from — not part of the totals to the left.")
                 }
                 if model.trash.items > 0 {
+                    // Its own group: this is neither the folder in view nor free
+                    // space, but bytes waiting to become free.
+                    Divider().frame(height: 26).overlay(Color.hairline)
                     Button { model.revealTrashInFinder() } label: {
                         HStack(spacing: 5) {
                             Image(systemName: "trash.fill")

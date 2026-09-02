@@ -7,10 +7,22 @@ import Testing
 struct TreemapViewTests {
     private final class Recorder: TreemapViewDelegate {
         var hovered: [FileItem?] = []
+        var selected: [FileItem?] = []
+        var trashRequests: [FileItem] = []
+        var revealRequests: [FileItem] = []
+        var selectionToggles: [FileItem] = []
+        var stagedItems: Set<ObjectIdentifier> = []
+
         func treemap(_ view: TreemapView, didHover cell: TreemapCell?) { hovered.append(cell?.item) }
-        func treemap(_ view: TreemapView, didSelect cell: TreemapCell?) {}
+        func treemap(_ view: TreemapView, didSelect cell: TreemapCell?) { selected.append(cell?.item) }
         func treemap(_ view: TreemapView, didActivate item: FileItem) {}
         func treemapDidRequestUp(_ view: TreemapView) {}
+        func treemap(_ view: TreemapView, didRequestTrash item: FileItem) { trashRequests.append(item) }
+        func treemap(_ view: TreemapView, didRequestReveal item: FileItem) { revealRequests.append(item) }
+        func treemap(_ view: TreemapView, didToggleSelection item: FileItem) { selectionToggles.append(item) }
+        func treemap(_ view: TreemapView, isStaged item: FileItem) -> Bool {
+            stagedItems.contains(ObjectIdentifier(item))
+        }
     }
 
     private func tree() -> FileItem {
@@ -107,5 +119,108 @@ struct TreemapRefreshTests {
         view.show(root: root)
         view.reload()
         #expect(view.root === root)
+    }
+}
+
+@Suite("Map context menu")
+@MainActor
+struct TreemapMenuTests {
+    private final class Recorder: TreemapViewDelegate {
+        var trashRequests: [FileItem] = []
+        var revealRequests: [FileItem] = []
+        var selectionToggles: [FileItem] = []
+        var activated: [FileItem] = []
+        var selected: [FileItem?] = []
+        var staged: Set<ObjectIdentifier> = []
+
+        func treemap(_ view: TreemapView, didHover cell: TreemapCell?) {}
+        func treemap(_ view: TreemapView, didSelect cell: TreemapCell?) { selected.append(cell?.item) }
+        func treemap(_ view: TreemapView, didActivate item: FileItem) { activated.append(item) }
+        func treemapDidRequestUp(_ view: TreemapView) {}
+        func treemap(_ view: TreemapView, didRequestTrash item: FileItem) { trashRequests.append(item) }
+        func treemap(_ view: TreemapView, didRequestReveal item: FileItem) { revealRequests.append(item) }
+        func treemap(_ view: TreemapView, didToggleSelection item: FileItem) { selectionToggles.append(item) }
+        func treemap(_ view: TreemapView, isStaged item: FileItem) -> Bool {
+            staged.contains(ObjectIdentifier(item))
+        }
+    }
+
+    private func tree() -> FileItem {
+        let inner = FileItem(name: "inner.bin", isDirectory: false,
+                             logicalSize: 400, physicalSize: 400)
+        let folder = FileItem(name: "folder", isDirectory: true, children: [inner])
+        folder.physicalSize = 400
+        let file = FileItem(name: "loose.bin", isDirectory: false,
+                            logicalSize: 900, physicalSize: 900)
+        let root = FileItem(name: "/tmp/menu", isDirectory: true, children: [folder, file])
+        root.physicalSize = 1_300
+        root.children.sort { $0.physicalSize > $1.physicalSize }
+        return root
+    }
+
+    private func view() -> (TreemapView, Recorder) {
+        let view = TreemapView(frame: NSRect(x: 0, y: 0, width: 500, height: 400))
+        let recorder = Recorder()
+        view.delegate = recorder
+        view.show(root: tree())
+        return (view, recorder)
+    }
+
+    private func rightClick(_ view: TreemapView, at point: NSPoint) -> NSMenu? {
+        let event = NSEvent.mouseEvent(with: .rightMouseDown, location: point,
+                                       modifierFlags: [], timestamp: 0, windowNumber: 0,
+                                       context: nil, eventNumber: 0, clickCount: 1, pressure: 1)!
+        return view.menu(for: event)
+    }
+
+    @Test func rightClickingATileOffersTrashAndFinder() throws {
+        let (view, _) = view()
+        let menu = try #require(rightClick(view, at: NSPoint(x: 60, y: 60)))
+        let titles = menu.items.map(\.title)
+        #expect(titles.contains { $0.contains("Move") && $0.contains("Trash") })
+        #expect(titles.contains("Reveal in Finder"))
+        #expect(titles.contains("Copy Path"))
+        #expect(titles.contains("Select for Trash"))
+    }
+
+    @Test func theMenuNamesTheTileItActsOn() throws {
+        let (view, _) = view()
+        let menu = try #require(rightClick(view, at: NSPoint(x: 60, y: 60)))
+        let heading = try #require(menu.items.first)
+        #expect(heading.title.contains("loose.bin") || heading.title.contains("folder"))
+        #expect(!heading.isEnabled, "the heading is a label, not an action")
+    }
+
+    @Test func rightClickingAlsoSelectsTheTile() throws {
+        let (view, recorder) = view()
+        _ = rightClick(view, at: NSPoint(x: 60, y: 60))
+        #expect(recorder.selected.count == 1)
+        #expect(view.selectedItemIdentity != nil)
+    }
+
+    @Test func choosingMoveToTrashAsksForThatItem() throws {
+        let (view, recorder) = view()
+        let menu = try #require(rightClick(view, at: NSPoint(x: 60, y: 60)))
+        let trashItem = try #require(menu.items.first { $0.title.contains("Trash")
+                                                        && $0.title.hasPrefix("Move") })
+        _ = trashItem.target?.perform(trashItem.action, with: trashItem)
+        #expect(recorder.trashRequests.count == 1)
+        #expect(recorder.trashRequests.first === view.selectedItemIdentity)
+    }
+
+    @Test func theSelectionEntryFollowsWhatIsAlreadyTicked() throws {
+        let (view, recorder) = view()
+        let firstTile = try #require(view.laidOutItemsForTesting.first)
+        recorder.staged = [ObjectIdentifier(firstTile)]
+
+        let menu = try #require(rightClick(view, at: NSPoint(x: 60, y: 60)))
+        #expect(menu.items.map(\.title).contains("Remove from Selection"))
+    }
+
+    @Test func clickingEmptySpaceOffersNoMenu() {
+        let view = TreemapView(frame: NSRect(x: 0, y: 0, width: 500, height: 400))
+        view.delegate = Recorder()
+        // No scan loaded: nothing to act on.
+        #expect(rightClick(view, at: NSPoint(x: 10, y: 10)) == nil)
     }
 }

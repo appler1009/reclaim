@@ -5,6 +5,11 @@ protocol TreemapViewDelegate: AnyObject {
     func treemap(_ view: TreemapView, didSelect cell: TreemapCell?)
     func treemap(_ view: TreemapView, didActivate item: FileItem)
     func treemapDidRequestUp(_ view: TreemapView)
+    func treemap(_ view: TreemapView, didRequestTrash item: FileItem)
+    func treemap(_ view: TreemapView, didRequestReveal item: FileItem)
+    func treemap(_ view: TreemapView, didToggleSelection item: FileItem)
+    /// Whether the item is currently ticked for removal, for the menu's title.
+    func treemap(_ view: TreemapView, isStaged item: FileItem) -> Bool
 }
 
 /// Renders a squarified treemap of the folder currently in view.
@@ -431,6 +436,83 @@ final class TreemapView: NSView {
             hovered = nil
             delegate?.treemapDidRequestUp(self)
         }
+    }
+
+    // MARK: - Context menu
+
+    /// The tile the open context menu applies to.
+    private var contextItem: FileItem?
+
+    override func menu(for event: NSEvent) -> NSMenu? {
+        let point = convert(event.locationInWindow, from: nil)
+        guard let cell = layout.item(at: point) else { return nil }
+        let item = cell.item
+        contextItem = item
+
+        // Right-clicking also selects, so it is obvious what the menu acts on.
+        selected = item
+        delegate?.treemap(self, didSelect: cell)
+        needsDisplay = true
+
+        let menu = NSMenu()
+        menu.autoenablesItems = false
+
+        let heading = NSMenuItem(title: "\(item.name) — \(ByteFormat.string(item.size(measure)))",
+                                 action: nil, keyEquivalent: "")
+        heading.isEnabled = false
+        menu.addItem(heading)
+        menu.addItem(.separator())
+
+        if item.isDirectory, !item.children.isEmpty {
+            menu.addItem(entry("Open in Map", #selector(openInMap)))
+        }
+        menu.addItem(entry("Reveal in Finder", #selector(revealInFinder)))
+        menu.addItem(entry("Copy Path", #selector(copyPath)))
+        menu.addItem(.separator())
+
+        let isStaged = delegate?.treemap(self, isStaged: item) ?? false
+        menu.addItem(entry(isStaged ? "Remove from Selection" : "Select for Trash",
+                           #selector(toggleSelection)))
+
+        let trash = entry("Move “\(item.name)” to Trash", #selector(moveToTrash))
+        trash.attributedTitle = NSAttributedString(
+            string: trash.title,
+            attributes: [.foregroundColor: Theme.accent])
+        menu.addItem(trash)
+        return menu
+    }
+
+    private func entry(_ title: String, _ action: Selector) -> NSMenuItem {
+        let item = NSMenuItem(title: title, action: action, keyEquivalent: "")
+        item.target = self
+        item.isEnabled = true
+        return item
+    }
+
+    @objc private func openInMap() {
+        guard let contextItem else { return }
+        delegate?.treemap(self, didActivate: contextItem)
+    }
+
+    @objc private func revealInFinder() {
+        guard let contextItem else { return }
+        delegate?.treemap(self, didRequestReveal: contextItem)
+    }
+
+    @objc private func copyPath() {
+        guard let contextItem else { return }
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString(contextItem.path, forType: .string)
+    }
+
+    @objc private func toggleSelection() {
+        guard let contextItem else { return }
+        delegate?.treemap(self, didToggleSelection: contextItem)
+    }
+
+    @objc private func moveToTrash() {
+        guard let contextItem else { return }
+        delegate?.treemap(self, didRequestTrash: contextItem)
     }
 
     override func mouseDown(with event: NSEvent) {

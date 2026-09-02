@@ -321,8 +321,15 @@ final class AppModel: ObservableObject {
     /// figure all follow it — instead of the window sitting still and then
     /// jumping once at the end.
     func trashStaged() async -> DeleteReport {
-        let items = staged
-        Log.info("trash requested", ["items": "\(items.count)", "bytes": "\(stagedBytes)"])
+        await trash(staged)
+    }
+
+    /// Moves specific items, leaving any unrelated selection alone — the map's
+    /// context menu acts on one tile without disturbing what is ticked.
+    @discardableResult
+    func trash(_ items: [FileItem]) async -> DeleteReport {
+        Log.info("trash requested", ["items": "\(items.count)",
+                                     "bytes": "\(items.reduce(UInt64(0)) { $0 + $1.size(measure) })"])
         var report = DeleteReport()
 
         for node in items {
@@ -355,7 +362,6 @@ final class AppModel: ObservableObject {
         Log.info("trash finished", ["trashed": "\(report.trashed.count)",
                                     "failed": "\(report.failures.count)",
                                     "bytes": "\(report.bytes)"])
-        staged.removeAll()
         selectedItem = nil
         hover.set(nil)
         refreshBreakdown()

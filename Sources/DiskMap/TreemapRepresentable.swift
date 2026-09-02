@@ -47,5 +47,20 @@ struct TreemapRepresentable: NSViewRepresentable {
         nonisolated func treemapDidRequestUp(_ view: TreemapView) {
             MainActor.assumeIsolated { model.zoomOut() }
         }
+        nonisolated func treemap(_ view: TreemapView, didRequestTrash item: FileItem) {
+            MainActor.assumeIsolated {
+                let model = self.model
+                Task { await model.trash([item]) }
+            }
+        }
+        nonisolated func treemap(_ view: TreemapView, didRequestReveal item: FileItem) {
+            MainActor.assumeIsolated { model.revealInFinder(item) }
+        }
+        nonisolated func treemap(_ view: TreemapView, didToggleSelection item: FileItem) {
+            MainActor.assumeIsolated { model.toggleStaged(item) }
+        }
+        nonisolated func treemap(_ view: TreemapView, isStaged item: FileItem) -> Bool {
+            MainActor.assumeIsolated { model.isStaged(item) }
+        }
     }
 }
