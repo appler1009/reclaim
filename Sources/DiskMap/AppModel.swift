@@ -49,8 +49,12 @@ final class AppModel: ObservableObject {
     /// Whole-disk scans are meaningless without Full Disk Access; we probe for it
     /// so the UI can say so before the user waits for a half-empty result.
     @Published var hasFullDiskAccess = false
+    /// True while a scan is running, including once its first level is on screen.
+    @Published var isScanning = false
 
     private var session: ScanSession?
+    /// Ticks the partial sizes into the tree while a scan runs.
+    private var liveTimer: Timer?
 
     /// How an item is removed. Injectable so tests can exercise the bookkeeping
     /// around a deletion without putting anything in the real Trash.
@@ -211,31 +215,44 @@ final class AppModel: ObservableObject {
 
         Log.info("scan started", ["path": url.path])
         let startedAt = Date()
+        isScanning = true
 
         session.onProgress = { [weak self] snapshot in
             DispatchQueue.main.async { self?.progress = snapshot }
         }
+
         DispatchQueue.global(qos: .userInitiated).async {
-            let root = Scanner.scan(url: url, options: ScanOptions(), session: session)
+            let root = Scanner.scan(url: url, options: ScanOptions(), session: session) { partial in
+                // The first level, milliseconds in: show it and start growing it.
+                DispatchQueue.main.async { [weak self] in
+                    guard let self, self.session === session else { return }
+                    self.adoptPartial(partial, session: session)
+                }
+            }
             root?.warmTotals()
             DispatchQueue.main.async { [weak self] in
                 guard let self, self.session === session else { return }
+                self.stopLiveUpdates()
                 guard !session.isCancelled else {
                     Log.info("scan cancelled", ["path": url.path])
-                    self.phase = .idle
+                    self.isScanning = false
+                    self.phase = self.scanRoot == nil ? .idle : .ready
                     return
                 }
                 guard let root else {
                     Log.error("scan failed", ["path": url.path])
+                    self.isScanning = false
                     self.phase = .failed("Could not read \(url.path)")
                     return
                 }
                 self.scanRoot = root
                 self.zoomRoot = self.restorePath(from: root)
-                self.refreshBreakdown()
+                self.isScanning = false
                 self.phase = .ready
-                self.startNavigationStressIfRequested()
+                self.refreshBreakdown()
+                self.treeRevision += 1
                 self.refreshTrashSize()
+                self.startNavigationStressIfRequested()
                 Log.info("scan finished", [
                     "path": url.path,
                     "seconds": String(format: "%.2f", Date().timeIntervalSince(startedAt)),
@@ -247,7 +264,66 @@ final class AppModel: ObservableObject {
         }
     }
 
+    /// Shows the first level of a running scan and starts growing its sizes from
+    /// the scanner's per-branch counters.
+    private func adoptPartial(_ partial: FileItem, session: ScanSession) {
+        scanRoot = partial
+        zoomRoot = partial
+        phase = .ready              // the ordinary browsing UI, mid-scan
+        applyBranchTotals(from: session)
+        startLiveUpdates(session: session)
+    }
+
+    private func startLiveUpdates(session: ScanSession) {
+        stopLiveUpdates()
+        // Eight times a second: fast enough to feel live, rare enough that the
+        // relayout it triggers is nowhere near a frame budget.
+        let timer = Timer(timeInterval: 0.125, repeats: true) { [weak self] _ in
+            MainActor.assumeIsolated {
+                guard let self, self.session === session, self.isScanning else { return }
+                self.applyBranchTotals(from: session)
+            }
+        }
+        RunLoop.main.add(timer, forMode: .common)
+        liveTimer = timer
+    }
+
+    private func stopLiveUpdates() {
+        liveTimer?.invalidate()
+        liveTimer = nil
+    }
+
+    /// Copies the scanner's running totals onto the partial tree, largest first
+    /// so the map keeps its usual ordering as it fills in.
+    private func applyBranchTotals(from session: ScanSession) {
+        guard isScanning, let root = scanRoot, root === zoomRoot else { return }
+        let totals = session.branchTotals()
+        guard totals.bytes.count == root.children.count else { return }
+
+        var total: UInt64 = 0
+        var files = 0
+        for (index, child) in root.children.enumerated() {
+            if child.isDirectory {
+                child.physicalSize = totals.bytes[index]
+                child.logicalSize = totals.bytes[index]
+                child.fileCount = totals.files[index]
+            }
+            total += child.physicalSize
+            files += child.fileCount
+        }
+        root.physicalSize = total
+        root.logicalSize = total
+        root.fileCount = files
+        root.children.sort { $0.physicalSize > $1.physicalSize }
+        root.invalidateTotals()
+        breakdown = Breakdown.of(root, measure: measure)
+        treeRevision += 1
+        notify()
+    }
+
     func cancelScan() {
+        stopLiveUpdates()
+        isScanning = false
         session?.cancel()
         session = nil
         phase = scanRoot == nil ? .idle : .ready
@@ -418,6 +494,13 @@ final class AppModel: ObservableObject {
     }
 
     func show(_ node: FileItem) {
+        // A folder with no children yet is one this scan has not reached (or was
+        // stopped before reaching); entering it would show an empty map.
+        if node.isDirectory, node.children.isEmpty, node !== zoomRoot {
+            selectedItem = node
+            notify()
+            return
+        }
         let target = node.isDirectory ? node : (node.parent ?? zoomRoot)
         navigatedInwards = !(zoomRoot?.isDescendant(of: target ?? node) ?? true)
         zoomRoot = target

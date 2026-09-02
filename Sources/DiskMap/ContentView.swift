@@ -69,7 +69,14 @@ struct ContentView: View {
                 .help("Go to the enclosing folder (⌘↑). Hold for the folders above it.")
             }
             ToolbarItemGroup(placement: .primaryAction) {
-                if model.phase == .ready {
+                if model.isScanning {
+                    Button { model.cancelScan() } label: {
+                        Label("Stop", systemImage: "stop.fill")
+                    }
+                    .labelStyle(.titleAndIcon)
+                    .help("Stop scanning and keep what has been found so far")
+                }
+                if model.phase == .ready && !model.isScanning {
                     Menu {
                         ForEach(SizeMeasure.allCases, id: \.self) { measure in
                             Button {
@@ -223,9 +230,12 @@ private struct HeaderBar: View {
                                 .font(.system(size: 11)).foregroundStyle(.white.opacity(0.45))
                         }
                     }
-                    Overline(text: model.zoomRoot === model.scanRoot
-                             ? "Total \(model.measure == .physical ? "on disk" : "size")"
-                             : "This folder")
+                    // No file count here: "files inside" sits right beside it.
+                    Overline(text: model.isScanning
+                             ? "Scanning…"
+                             : (model.zoomRoot === model.scanRoot
+                                ? "Total \(model.measure == .physical ? "on disk" : "size")"
+                                : "This folder"))
                 }
                 .help("Everything inside \(model.zoomRoot?.name ?? "this folder"), added up. "
                       + "The toolbar chooses between space occupied on disk and the files' own size.")

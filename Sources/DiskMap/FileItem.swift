@@ -135,6 +135,12 @@ final class FileItem {
         return totals
     }
 
+    /// Drops the cached roll-up. Needed while a scan is running, where a
+    /// folder's size changes under the summary that was derived from it.
+    func invalidateTotals() {
+        familyTotals = nil
+    }
+
     /// Sums this subtree up front, off the main thread, so the first navigation
     /// after a scan is as cheap as every later one.
     func warmTotals() {

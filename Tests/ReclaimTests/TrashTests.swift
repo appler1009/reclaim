@@ -234,3 +234,44 @@ struct HierarchyTests {
         #expect(model.zoomRoot === root)
     }
 }
+
+@Suite("Partial trees")
+@MainActor
+struct PartialTreeTests {
+    /// The shape the UI holds while a scan is running: real children, no
+    /// grandchildren yet.
+    private func partialTree() -> FileItem {
+        let pending = FileItem(name: "not-scanned-yet", isDirectory: true)
+        pending.physicalSize = 5_000
+        let file = FileItem(name: "known.bin", isDirectory: false,
+                            logicalSize: 1_000, physicalSize: 1_000)
+        let root = FileItem(name: "/tmp/partial", isDirectory: true, children: [pending, file])
+        root.physicalSize = 6_000
+        return root
+    }
+
+    @Test func aFolderThatHasNotBeenScannedCannotBeEntered() {
+        let model = AppModel()
+        let root = partialTree()
+        model.adoptForTesting(root: root, url: URL(fileURLWithPath: "/tmp/partial"))
+        let pending = root.children[0]
+
+        model.show(pending)
+        #expect(model.zoomRoot === root, "entering it would show an empty map")
+        #expect(model.selectedItem === pending, "but it is still selectable")
+
+        model.zoom(into: pending)
+        #expect(model.zoomRoot === root)
+    }
+
+    @Test func clickingAFileStillSelectsItWithoutNavigating() {
+        let model = AppModel()
+        let root = partialTree()
+        model.adoptForTesting(root: root, url: URL(fileURLWithPath: "/tmp/partial"))
+        let file = root.children[1]
+
+        model.show(file)
+        #expect(model.zoomRoot === root)
+        #expect(model.selectedItem === file)
+    }
+}

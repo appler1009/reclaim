@@ -25,8 +25,27 @@ final class ScanSession: @unchecked Sendable {
     private var bytes: UInt64 = 0
     private var current = ""
     private var lastReport = DispatchTime.now()
+    /// Bytes found so far under each top-level child of the scan root.
+    ///
+    /// This is what lets the map draw a scan while it is still running: the
+    /// tiles are the root's children, and these are their sizes so far.
+    private var branchBytes: [UInt64] = []
+    private var branchFiles: [Int] = []
 
     var onProgress: ((ScanProgress) -> Void)?
+
+    func prepareBranches(_ count: Int) {
+        lock.lock()
+        branchBytes = [UInt64](repeating: 0, count: count)
+        branchFiles = [Int](repeating: 0, count: count)
+        lock.unlock()
+    }
+
+    /// Bytes and file counts per top-level branch, in the order prepared.
+    func branchTotals() -> (bytes: [UInt64], files: [Int]) {
+        lock.lock(); defer { lock.unlock() }
+        return (branchBytes, branchFiles)
+    }
 
     var isCancelled: Bool {
         lock.lock(); defer { lock.unlock() }
@@ -37,10 +56,14 @@ final class ScanSession: @unchecked Sendable {
         lock.lock(); cancelled = true; lock.unlock()
     }
 
-    func note(files delta: Int, bytes deltaBytes: UInt64, path: String) {
+    func note(files delta: Int, bytes deltaBytes: UInt64, path: String, branch: Int = -1) {
         lock.lock()
         files += delta
         bytes += deltaBytes
+        if branch >= 0, branch < branchBytes.count {
+            branchBytes[branch] += deltaBytes
+            branchFiles[branch] += delta
+        }
         current = path
         let now = DispatchTime.now()
         let due = now.uptimeNanoseconds &- lastReport.uptimeNanoseconds > 120_000_000
@@ -59,7 +82,12 @@ final class ScanSession: @unchecked Sendable {
 /// A LIFO pool of directories waiting to be read. Depth-first order keeps the
 /// pending set small even on huge trees.
 private final class DirectoryQueue: @unchecked Sendable {
-    struct Job { let node: FileItem; let path: String }
+    struct Job {
+        let node: FileItem
+        let path: String
+        /// Index of the top-level child this job sits under, or -1 for the root.
+        let branch: Int
+    }
 
     private let lock = NSCondition()
     private var stack: [Job] = []
@@ -112,7 +140,18 @@ enum Scanner {
     /// Builds the tree for `url`. Structure is discovered by a pool of worker
     /// threads; sizes are summed afterwards in a single post-order pass, which
     /// keeps the parallel phase lock-free per directory.
-    static func scan(url: URL, options: ScanOptions, session: ScanSession) -> FileItem? {
+    ///
+    /// `onTopLevel` receives a standalone copy of the root and its immediate
+    /// children as soon as they are known — within milliseconds — so the app can
+    /// draw the scan while it runs. The copy is deliberately not part of the tree
+    /// the workers are building: they go on mutating that from several threads,
+    /// and the UI must have something it can read safely. Each copied child's
+    /// index is its branch number, and `ScanSession.branchTotals()` reports the
+    /// bytes found under each so far.
+    static func scan(url: URL,
+                     options: ScanOptions,
+                     session: ScanSession,
+                     onTopLevel: ((FileItem) -> Void)? = nil) -> FileItem? {
         let path = url.path
         var st = stat()
         guard lstat(path, &st) == 0 else { return nil }
@@ -125,8 +164,20 @@ enum Scanner {
                             isDirectory: true,
                             modified: Date(timeIntervalSince1970: TimeInterval(st.st_mtimespec.tv_sec)),
                             fileCount: 0)
+        // Read the first level up front, so the caller has something to show and
+        // the branch numbering is fixed before any worker starts.
+        let topLevel = read(job: .init(node: root, path: path, branch: -1),
+                            rootDev: st.st_dev,
+                            options: options,
+                            session: session,
+                            assignBranches: true)
+        session.prepareBranches(root.children.count)
+        if let onTopLevel {
+            onTopLevel(copyTopLevel(of: root))
+        }
+
         let queue = DirectoryQueue()
-        queue.push([.init(node: root, path: path)])
+        queue.push(topLevel)
 
         let group = DispatchGroup()
         for _ in 0 ..< options.workers {
@@ -154,7 +205,8 @@ enum Scanner {
     private static func read(job: DirectoryQueue.Job,
                              rootDev: dev_t,
                              options: ScanOptions,
-                             session: ScanSession) -> [DirectoryQueue.Job] {
+                             session: ScanSession,
+                             assignBranches: Bool = false) -> [DirectoryQueue.Job] {
         guard let dir = opendir(job.path) else {
             job.node.unreadableCount = 1
             return []
@@ -191,7 +243,10 @@ enum Scanner {
                                     fileCount: 0)
                 node.parent = job.node
                 children.append(node)
-                subdirectories.append(.init(node: node, path: fullPath))
+                // A root child starts its own branch, numbered by its position
+                // among the root's children; anything deeper inherits it.
+                let branch = assignBranches ? children.count - 1 : job.branch
+                subdirectories.append(.init(node: node, path: fullPath, branch: branch))
             } else {
                 // Symlinks and special files are counted at their own size, never followed.
                 let node = leaf(name: name, st: st)
@@ -207,8 +262,29 @@ enum Scanner {
 
         // Only this worker touches `job.node.children`, so no lock is needed.
         job.node.children = children
-        session.note(files: localFiles, bytes: localBytes, path: job.path)
+        session.note(files: localFiles, bytes: localBytes, path: job.path, branch: job.branch)
         return subdirectories
+    }
+
+    /// A detached copy of the root and its immediate children: names and sizes
+    /// only, with no grandchildren, so nothing the workers touch is shared.
+    private static func copyTopLevel(of root: FileItem) -> FileItem {
+        let children = root.children.map { child in
+            FileItem(name: child.name,
+                     isDirectory: child.isDirectory,
+                     logicalSize: child.logicalSize,
+                     physicalSize: child.physicalSize,
+                     modified: child.modified,
+                     fileCount: child.isDirectory ? 0 : 1)
+        }
+        let copy = FileItem(name: root.name,
+                            isDirectory: true,
+                            modified: root.modified,
+                            fileCount: 0,
+                            children: children)
+        copy.physicalSize = children.reduce(0) { $0 + $1.physicalSize }
+        copy.logicalSize = children.reduce(0) { $0 + $1.logicalSize }
+        return copy
     }
 
     /// Iterative post-order sum of sizes, file counts and unreadable directories.
