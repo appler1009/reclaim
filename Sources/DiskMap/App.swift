@@ -103,11 +103,18 @@ private struct NavigationCommands: View {
 
 final class AppDelegate: NSObject, NSApplicationDelegate {
     private var sizeGuard: WindowSizeGuard?
+    /// Lets local agents ask what is on the disk. See MCPServer.
+    private let mcp = MCPServer()
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApp.setActivationPolicy(.regular)
         NSApp.activate(ignoringOtherApps: true)
         Log.debug("app delegate launched")
+        do {
+            try mcp.start()
+        } catch {
+            Log.error("could not start mcp server", ["error": error.localizedDescription])
+        }
         styleWindows()
         sizeGuard = WindowSizeGuard(defaultSize: NSSize(width: 1320, height: 860))
     }
@@ -122,6 +129,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             }
         }
     }
+
+    func applicationWillTerminate(_ notification: Notification) {
+        mcp.stop()
+    }
+
+    var mcpURL: String { mcp.url }
 
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool { true }
 }
