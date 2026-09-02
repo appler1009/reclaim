@@ -2,7 +2,9 @@ import QuartzCore
 import SwiftUI
 
 struct ContentView: View {
-    @ObservedObject var model: AppModel
+    /// One model per window: each window is an independent scan, which is what
+    /// makes a second tab worth opening.
+    @StateObject private var model = AppModel()
     @State private var report: AppModel.DeleteReport?
     @State private var working = false
     @AppStorage(SidebarWidth.storageKey) private var storedSidebarWidth = SidebarWidth.default
@@ -52,6 +54,8 @@ struct ContentView: View {
         // menu when several scans are open.
         .navigationTitle(windowTitle)
         .navigationSubtitle(windowSubtitle)
+        // Points the menu bar at this window while it is in front.
+        .focusedSceneValue(\.scan, model)
         .preferredColorScheme(.dark)
         .toolbar {
             ToolbarItem(placement: .navigation) {

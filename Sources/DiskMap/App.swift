@@ -3,10 +3,6 @@ import SwiftUI
 @main
 struct DiskMapApp: App {
     @NSApplicationDelegateAdaptor(AppDelegate.self) private var delegate
-    /// Owned here rather than by the view, so the menu bar can act on it: menu
-    /// commands live in the scene, and reaching a view's state from them would
-    /// otherwise mean routing every command through a notification.
-    @StateObject private var model = AppModel()
 
     init() {
         CLI.runIfRequested()
@@ -17,7 +13,7 @@ struct DiskMapApp: App {
 
     var body: some Scene {
         WindowGroup("Reclaim") {
-            ContentView(model: model)
+            ContentView()
         }
         .defaultSize(width: 1320, height: 860)
         // Without this the greedy content makes SwiftUI open the window at
@@ -27,53 +23,79 @@ struct DiskMapApp: App {
         // window styling below makes translucent.
         .windowToolbarStyle(.unified(showsTitle: true))
         .commands {
-            // The File menu is where a document-shaped app is expected to offer
-            // "open something else", and this app's document is a scan.
-            CommandGroup(replacing: .newItem) {
-                Menu("Scan Volume") {
-                    ForEach(model.volumes) { volume in
-                        Button {
-                            model.scan(volume: volume)
-                        } label: {
-                            Text("\(volume.name) — \(ByteFormat.string(volume.available)) free")
-                        }
-                    }
-                }
-                Button("Scan Home Folder") {
-                    model.scan(FileManager.default.homeDirectoryForCurrentUser)
-                }
-                .keyboardShortcut("h", modifiers: [.command, .shift])
-
-                Button("Scan Folder…") { model.chooseFolder() }
-                    .keyboardShortcut("o", modifiers: .command)
-
-                Divider()
-
-                Button("Rescan") { model.rescan() }
-                    .keyboardShortcut("r", modifiers: .command)
-                    .disabled(model.scanRoot == nil || model.isScanning)
-
-                Button("Stop Scanning") { model.cancelScan() }
-                    .keyboardShortcut(".", modifiers: .command)
-                    .disabled(!model.isScanning)
-
-                Divider()
-
-                Button("Reveal in Finder") {
-                    if let item = model.selectedItem ?? model.zoomRoot { model.revealInFinder(item) }
-                }
-                .keyboardShortcut("r", modifiers: [.command, .shift])
-                .disabled(model.scanRoot == nil)
-
-                Button("Open Trash") { model.revealTrashInFinder() }
-                    .disabled(model.trash.items == 0)
+            // Kept after .newItem rather than replacing it, so New Window (⌘N)
+            // survives: a window is a scan, and opening another is the point.
+            CommandGroup(after: .newItem) {
+                ScanCommands()
             }
             CommandGroup(after: .sidebar) {
-                Button("Enclosing Folder") { model.zoomOut() }
-                    .keyboardShortcut(.upArrow, modifiers: .command)
-                    .disabled(model.zoomRoot == nil || model.zoomRoot === model.scanRoot)
+                NavigationCommands()
             }
         }
+    }
+}
+
+/// File-menu entries, acting on whichever scan window is in front.
+private struct ScanCommands: View {
+    @FocusedValue(\.scan) private var model
+
+    var body: some View {
+        Group {
+            Menu("Scan Volume") {
+                ForEach(model?.volumes ?? []) { volume in
+                    Button {
+                        model?.scan(volume: volume)
+                    } label: {
+                        Text("\(volume.name) — \(ByteFormat.string(volume.available)) free")
+                    }
+                }
+            }
+            .disabled(model == nil)
+
+            Button("Scan Home Folder") {
+                model?.scan(FileManager.default.homeDirectoryForCurrentUser)
+            }
+            .keyboardShortcut("h", modifiers: [.command, .shift])
+            .disabled(model == nil)
+
+            Button("Scan Folder…") { model?.chooseFolder() }
+                .keyboardShortcut("o", modifiers: .command)
+                .disabled(model == nil)
+
+            Divider()
+
+            Button("Rescan") { model?.rescan() }
+                .keyboardShortcut("r", modifiers: .command)
+                .disabled(model?.scanRoot == nil || model?.isScanning == true)
+
+            Button("Stop Scanning") { model?.cancelScan() }
+                .keyboardShortcut(".", modifiers: .command)
+                .disabled(model?.isScanning != true)
+
+            Divider()
+
+            Button("Reveal in Finder") {
+                if let item = model?.selectedItem ?? model?.zoomRoot {
+                    model?.revealInFinder(item)
+                }
+            }
+            .keyboardShortcut("r", modifiers: [.command, .shift])
+            .disabled(model?.scanRoot == nil)
+
+            Button("Open Trash") { model?.revealTrashInFinder() }
+                .disabled((model?.trash.items ?? 0) == 0)
+        }
+    }
+}
+
+/// View-menu entries for moving around the scan in front.
+private struct NavigationCommands: View {
+    @FocusedValue(\.scan) private var model
+
+    var body: some View {
+        Button("Enclosing Folder") { model?.zoomOut() }
+            .keyboardShortcut(.upArrow, modifiers: .command)
+            .disabled(model?.zoomRoot == nil || model?.zoomRoot === model?.scanRoot)
     }
 }
 

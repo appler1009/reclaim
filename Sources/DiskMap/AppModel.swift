@@ -98,11 +98,25 @@ final class AppModel: ObservableObject {
         stress.start()
     }
 
-    /// `Reclaim --open <path>` starts a scan as soon as the window appears.
-    func scanLaunchArgumentIfPresent() {
-        let arguments = CommandLine.arguments
-        guard let index = arguments.firstIndex(of: "--open"), index + 1 < arguments.count else { return }
+    /// Whether `--open` has already been honoured. Windows are independent
+    /// scans, so a second one must not repeat the launch argument.
+    private static var launchArgumentConsumed = false
+
+    /// `Reclaim --open <path>` starts a scan as soon as the first window appears.
+    @discardableResult
+    func scanLaunchArgumentIfPresent(_ arguments: [String] = CommandLine.arguments) -> Bool {
+        guard !Self.launchArgumentConsumed else { return false }
+        guard let index = arguments.firstIndex(of: "--open"), index + 1 < arguments.count else {
+            return false
+        }
+        Self.launchArgumentConsumed = true
         scan(URL(fileURLWithPath: arguments[index + 1]))
+        return true
+    }
+
+    /// Test seam: lets a test start from a clean launch.
+    static func resetLaunchArgumentForTesting() {
+        launchArgumentConsumed = false
     }
 
     func refreshVolumes() {

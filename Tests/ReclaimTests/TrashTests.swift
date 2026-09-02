@@ -275,3 +275,42 @@ struct PartialTreeTests {
         #expect(model.selectedItem === file)
     }
 }
+
+@Suite("Windows")
+@MainActor
+struct WindowIndependenceTests {
+    @Test func aSecondWindowDoesNotRepeatTheLaunchScan() throws {
+        let fixture = try Fixture()
+        defer { fixture.cleanUp() }
+        try fixture.file("file.bin", bytes: 1_000)
+        AppModel.resetLaunchArgumentForTesting()
+        defer { AppModel.resetLaunchArgumentForTesting() }
+
+        let arguments = ["Reclaim", "--open", fixture.root.path]
+        let first = AppModel()
+        let second = AppModel()
+
+        #expect(first.scanLaunchArgumentIfPresent(arguments), "the first window honours it")
+        #expect(!second.scanLaunchArgumentIfPresent(arguments),
+                "a second window is a fresh scan, not a copy of the first")
+        #expect(second.scanRoot == nil)
+        #expect(second.phase == .idle, "a new window starts at the picker")
+    }
+
+    @Test func modelsDoNotShareState() throws {
+        let fixture = try Fixture()
+        defer { fixture.cleanUp() }
+        try fixture.file("a.bin", bytes: 2_000)
+
+        let one = AppModel()
+        let two = AppModel()
+        let root = try #require(Scanner.scan(url: fixture.root, options: ScanOptions(),
+                                             session: ScanSession()))
+        one.adoptForTesting(root: root, url: fixture.root)
+
+        // What one window is looking at must not follow the other around.
+        #expect(one.scanRoot != nil)
+        #expect(two.scanRoot == nil)
+        #expect(two.breakdown.rows.isEmpty)
+    }
+}
