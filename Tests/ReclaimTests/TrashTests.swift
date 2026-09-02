@@ -214,24 +214,23 @@ struct HierarchyTests {
         #expect(model.zoomRoot === root)
     }
 
-    @Test func enclosingTargetsWalkUpFromTheScanRoot() throws {
-        let model = AppModel()
-        model.scannedURL = URL(fileURLWithPath: "/Users/someone/projects/app")
+    @Test func theHierarchyStopsAtTheScanRoot() async throws {
+        let fixture = try Fixture()
+        defer { fixture.cleanUp() }
+        try fixture.file("deep/deeper/file.bin", bytes: 3_000)
 
-        let targets = model.enclosingScanTargets.map(\.path)
-        #expect(targets == ["/Users/someone/projects", "/Users/someone", "/Users", "/"])
-    }
-
-    @Test func aVolumeRootHasNothingAboveIt() {
         let model = AppModel()
-        model.scannedURL = URL(fileURLWithPath: "/")
-        #expect(model.enclosingScanTargets.isEmpty)
-    }
+        let root = try #require(Scanner.scan(url: fixture.root, options: ScanOptions(),
+                                             session: ScanSession()))
+        model.adoptForTesting(root: root, url: fixture.root)
+        let deep = try #require(root.children.first { $0.name == "deep" })
+        model.zoom(into: deep)
 
-    @Test func enclosingTargetsAreCapped() throws {
-        let model = AppModel()
-        model.scannedURL = URL(fileURLWithPath: "/a/b/c/d/e/f/g/h/i/j")
-        // Deep paths must not produce an unusable menu.
-        #expect(model.enclosingScanTargets.count <= 6)
+        // The trail the menu is built from never reaches above what was scanned.
+        #expect(model.breadcrumb.first === root)
+        #expect(model.breadcrumb.first?.parent == nil)
+        model.zoomOut()
+        model.zoomOut()   // already at the top: must stay there
+        #expect(model.zoomRoot === root)
     }
 }
