@@ -23,7 +23,8 @@ as a single level of tiles, each sized by the space it takes:
 - **One set of numbers.** The strip at the top always describes the folder currently in
   view: its size, its share of the scan, files inside, items here, free space on the volume.
 - **The list is the same data, ranked.** Contents largest-first with share bars, then a
-  by-file-type summary of everything below the current folder.
+  by-file-type summary of everything below the current folder. Drag the divider to resize
+  it; the width is remembered.
 - **Deleting is yours to start.** Tick anything in the list (or any tile), review the exact
   paths in the confirmation, and it goes to the **Trash** — `FileManager.trashItem`, never
   an outright delete. You can put it all back.

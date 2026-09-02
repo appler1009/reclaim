@@ -5,6 +5,7 @@ struct ContentView: View {
     @State private var confirming = false
     @State private var report: AppModel.DeleteReport?
     @State private var working = false
+    @AppStorage(SidebarWidth.storageKey) private var sidebarWidth = SidebarWidth.default
 
     var body: some View {
         ZStack {
@@ -14,11 +15,11 @@ struct ContentView: View {
                 Divider().overlay(Color.hairline)
                 HStack(spacing: 0) {
                     MapPane(model: model)
-                    Divider().overlay(Color.hairline)
+                    PaneDivider(width: $sidebarWidth)
                     BreakdownPane(model: model,
                                   working: working,
                                   onTrash: { confirming = true })
-                        .frame(width: 372)
+                        .frame(width: SidebarWidth.clamped(sidebarWidth))
                 }
             }
             if model.phase != .ready { Overlay(model: model) }
@@ -372,8 +373,6 @@ private struct PaneSection<Content: View>: View {
 /// row re-evaluated on any model change at all — hovering a tile invalidated the
 /// whole sidebar. `Equatable` lets SwiftUI skip rows whose inputs did not move.
 private struct BreakdownRowView: View, Equatable {
-    static let barWidth: CGFloat = 150
-
     let row: BreakdownRow
     let measure: SizeMeasure
     let isStaged: Bool
@@ -407,16 +406,16 @@ private struct BreakdownRowView: View, Equatable {
                     .font(.system(size: 11.5, weight: isSelected ? .semibold : .regular))
                     .foregroundStyle(.white.opacity(0.88))
                     .lineLimit(1).truncationMode(.middle)
-                // A fixed-width bar rather than a GeometryReader: one reader per
-                // row measurably slowed list rebuilds while navigating.
+                // A Shape rather than a GeometryReader: it is handed the row's
+                // real width at draw time, so the bar follows the sidebar as it
+                // is resized without a reader per row slowing list rebuilds.
                 ZStack(alignment: .leading) {
                     RoundedRectangle(cornerRadius: 2)
                         .fill(Color.white.opacity(0.06))
-                        .frame(width: Self.barWidth)
-                    RoundedRectangle(cornerRadius: 2)
+                    ShareBar(share: row.share)
                         .fill(Color(nsColor: row.node.dominantFamily(measure).color).opacity(0.75))
-                        .frame(width: max(2, Self.barWidth * row.share))
                 }
+                .frame(maxWidth: .infinity)
                 .frame(height: 3)
             }
 
@@ -843,5 +842,18 @@ private struct UpRow: View {
         }
         .buttonStyle(.plain)
         .onHover { hovering = $0 }
+    }
+}
+
+
+/// The filled portion of a row's share bar, sized from the width it is given.
+private struct ShareBar: Shape {
+    let share: Double
+
+    func path(in rect: CGRect) -> Path {
+        let width = max(2, rect.width * share)
+        return Path(roundedRect: CGRect(x: rect.minX, y: rect.minY,
+                                        width: width, height: rect.height),
+                    cornerRadius: 2)
     }
 }

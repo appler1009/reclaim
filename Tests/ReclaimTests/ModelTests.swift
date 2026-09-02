@@ -207,3 +207,18 @@ struct PathTests {
         #expect(child.path == "/Users")
     }
 }
+
+@Suite("Sidebar width")
+struct SidebarWidthTests {
+    @Test func widthsStayWithinBounds() {
+        #expect(SidebarWidth.clamped(10) == SidebarWidth.minimum)
+        #expect(SidebarWidth.clamped(10_000) == SidebarWidth.maximum)
+        #expect(SidebarWidth.clamped(420) == 420)
+    }
+
+    @Test func nonsenseFallsBackToTheDefault() {
+        // A corrupt preference must not collapse the sidebar to nothing.
+        #expect(SidebarWidth.clamped(.nan) == SidebarWidth.default)
+        #expect(SidebarWidth.clamped(.infinity) == SidebarWidth.maximum)
+    }
+}
