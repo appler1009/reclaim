@@ -253,7 +253,7 @@ private struct HeaderBar: View {
                     .help("Folders and files directly inside this one — the tiles on the map and the rows in the list.")
                 // Everything to the left describes the folder in view; what
                 // follows describes the whole volume, so it is set apart.
-                if model.volumeCapacity > 0 || (model.scanRoot?.unreadableCount ?? 0) > 0 {
+                if model.volumeCapacity > 0 {
                     Divider().frame(height: 26).overlay(Color.hairline)
                 }
                 if model.volumeCapacity > 0 {
@@ -280,6 +280,9 @@ private struct HeaderBar: View {
                     .help(trashHelp)
                 }
                 if let unreadable = model.scanRoot?.unreadableCount, unreadable > 0 {
+                    // Not a measurement of anything: a caveat about the scan
+                    // itself, and the one figure here that asks to be acted on.
+                    Divider().frame(height: 26).overlay(Color.hairline)
                     Button { model.openFullDiskAccessSettings() } label: {
                         HStack(spacing: 5) {
                             Image(systemName: "lock.shield.fill")
