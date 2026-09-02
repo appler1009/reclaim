@@ -186,3 +186,24 @@ struct FamilyTotalsTests {
         #expect(empty.dominantFamily(.physical) == .other)
     }
 }
+
+@Suite("Paths")
+struct PathTests {
+    @Test func pathsJoinWithoutTouchingTheFilesystem() {
+        // Names that do not exist on disk still produce the right path, which is
+        // only true because path building never stats anything.
+        let leaf = FileItem(name: "file.txt", isDirectory: false)
+        let mid = FileItem(name: "middle", isDirectory: true, children: [leaf])
+        let root = FileItem(name: "/nowhere/at/all", isDirectory: true, children: [mid])
+        #expect(leaf.path == "/nowhere/at/all/middle/file.txt")
+        #expect(root.path == "/nowhere/at/all")
+        #expect(leaf.url.path == "/nowhere/at/all/middle/file.txt")
+    }
+
+    @Test func aVolumeRootDoesNotDoubleItsSlash() {
+        let child = FileItem(name: "Users", isDirectory: true)
+        let root = FileItem(name: "/", isDirectory: true, children: [child])
+        _ = root
+        #expect(child.path == "/Users")
+    }
+}

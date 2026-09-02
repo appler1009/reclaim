@@ -214,7 +214,7 @@ private struct MapPane: View {
                 .background(Color.ink)
                 .clipped()
 
-            HoverBar(model: model)
+            HoverBar(model: model, hover: model.hover)
         }
         .onReceive(NotificationCenter.default.publisher(for: .reclaimNavigateUp)) { _ in
             model.zoomOut()
@@ -244,9 +244,10 @@ private struct LegendStrip: View {
 
 private struct HoverBar: View {
     @ObservedObject var model: AppModel
+    @ObservedObject var hover: HoverState
 
     var body: some View {
-        let item = model.hoverItem ?? model.selectedItem
+        let item = hover.item ?? model.selectedItem
         HStack(spacing: 12) {
             if let item {
                 Image(systemName: item.isDirectory ? "folder.fill" : "doc.fill")
@@ -294,19 +295,28 @@ private struct BreakdownPane: View {
                 VStack(alignment: .leading, spacing: 14) {
                     if !model.breakdown.rows.isEmpty {
                         PaneSection(title: "Contents, largest first") {
-                            VStack(spacing: 2) {
+                            // Lazy: a folder with dozens of children rebuilt every
+                            // row on every navigation, and SwiftUI's view graph
+                            // was the whole of the main thread in a profile.
+                            LazyVStack(spacing: 2) {
                                 if let parent = model.zoomRoot?.parent,
                                    model.zoomRoot !== model.scanRoot {
                                     UpRow(parentName: parent.name) { model.zoomOut() }
                                 }
-                                ForEach(model.breakdown.rows.prefix(60)) { row in
-                                    BreakdownRowView(model: model, row: row)
+                                ForEach(model.breakdown.rows.prefix(40)) { row in
+                                    BreakdownRowView(
+                                        row: row,
+                                        measure: model.measure,
+                                        isStaged: model.isStaged(row.node),
+                                        isSelected: model.selectedItem === row.node,
+                                        onToggleStaged: { model.toggleStaged(row.node) },
+                                        onShow: { model.show(row.node) },
+                                        onOpen: { model.zoom(into: row.node) },
+                                        onReveal: { model.revealInFinder(row.node) })
+                                    .equatable()
                                 }
-                                // Keyed on the folder, so the whole list moves
-                                // as one when the map changes level.
-                                .id(model.zoomRoot?.objectID)
-                                if model.breakdown.rows.count > 60 {
-                                    Text("+ \(model.breakdown.rows.count - 60) smaller items")
+                                if model.breakdown.rows.count > 40 {
+                                    Text("+ \(model.breakdown.rows.count - 40) smaller items")
                                         .font(.system(size: 10))
                                         .foregroundStyle(.white.opacity(0.35))
                                         .frame(maxWidth: .infinity, alignment: .leading)
@@ -317,7 +327,7 @@ private struct BreakdownPane: View {
                     }
                     if !model.breakdown.types.isEmpty {
                         PaneSection(title: "By file type") {
-                            VStack(spacing: 3) {
+                            LazyVStack(spacing: 3) {
                                 ForEach(model.breakdown.types) { total in
                                     TypeRowView(total: total, of: model.breakdown.total)
                                 }
@@ -326,6 +336,9 @@ private struct BreakdownPane: View {
                     }
                 }
                 .padding(12)
+                // Keyed on the folder so the list moves as one, in the same
+                // direction the map zooms. Measured free next to the SwiftUI
+                // pass it rides along with.
                 .transition(.asymmetric(
                     insertion: .move(edge: model.navigatedInwards ? .bottom : .top)
                         .combined(with: .opacity),
@@ -353,34 +366,56 @@ private struct PaneSection<Content: View>: View {
     }
 }
 
-private struct BreakdownRowView: View {
-    @ObservedObject var model: AppModel
+/// A row in the contents list.
+///
+/// Takes plain values rather than observing the model: as an observer, every
+/// row re-evaluated on any model change at all — hovering a tile invalidated the
+/// whole sidebar. `Equatable` lets SwiftUI skip rows whose inputs did not move.
+private struct BreakdownRowView: View, Equatable {
+    static let barWidth: CGFloat = 150
+
     let row: BreakdownRow
+    let measure: SizeMeasure
+    let isStaged: Bool
+    let isSelected: Bool
+    let onToggleStaged: () -> Void
+    let onShow: () -> Void
+    let onOpen: () -> Void
+    let onReveal: () -> Void
+
     @State private var hovering = false
 
-    private var isViewed: Bool { model.selectedItem === row.node }
+    static func == (lhs: BreakdownRowView, rhs: BreakdownRowView) -> Bool {
+        lhs.row.id == rhs.row.id
+            && lhs.row.bytes == rhs.row.bytes
+            && lhs.measure == rhs.measure
+            && lhs.isStaged == rhs.isStaged
+            && lhs.isSelected == rhs.isSelected
+    }
 
     var body: some View {
         HStack(spacing: 8) {
-            CheckBox(state: model.isStaged(row.node)) { model.toggleStaged(row.node) }
+            CheckBox(state: isStaged, action: onToggleStaged)
 
             Image(systemName: row.isDirectory ? "folder.fill" : "doc.fill")
                 .font(.system(size: 10))
-                .foregroundStyle(Color(nsColor: FileFamily.of(row.node).color).opacity(0.9))
+                .foregroundStyle(Color(nsColor: row.node.dominantFamily(measure).color).opacity(0.9))
                 .frame(width: 13)
 
             VStack(alignment: .leading, spacing: 3) {
                 Text(row.name)
-                    .font(.system(size: 11.5, weight: isViewed ? .semibold : .regular))
+                    .font(.system(size: 11.5, weight: isSelected ? .semibold : .regular))
                     .foregroundStyle(.white.opacity(0.88))
                     .lineLimit(1).truncationMode(.middle)
-                GeometryReader { geometry in
-                    ZStack(alignment: .leading) {
-                        RoundedRectangle(cornerRadius: 2).fill(Color.white.opacity(0.06))
-                        RoundedRectangle(cornerRadius: 2)
-                            .fill(Color(nsColor: FileFamily.of(row.node).color).opacity(0.75))
-                            .frame(width: max(2, geometry.size.width * row.share))
-                    }
+                // A fixed-width bar rather than a GeometryReader: one reader per
+                // row measurably slowed list rebuilds while navigating.
+                ZStack(alignment: .leading) {
+                    RoundedRectangle(cornerRadius: 2)
+                        .fill(Color.white.opacity(0.06))
+                        .frame(width: Self.barWidth)
+                    RoundedRectangle(cornerRadius: 2)
+                        .fill(Color(nsColor: row.node.dominantFamily(measure).color).opacity(0.75))
+                        .frame(width: max(2, Self.barWidth * row.share))
                 }
                 .frame(height: 3)
             }
@@ -398,19 +433,15 @@ private struct BreakdownRowView: View {
         .padding(.vertical, 5)
         .background(
             RoundedRectangle(cornerRadius: 6)
-                .fill(hovering || isViewed ? Color.white.opacity(0.05) : .clear)
+                .fill(hovering || isSelected ? Color.white.opacity(0.05) : .clear)
         )
         .contentShape(Rectangle())
         .onHover { hovering = $0 }
-        .onTapGesture { model.show(row.node) }
+        .onTapGesture(perform: onShow)
         .contextMenu {
-            if row.isDirectory {
-                Button("Open in map") { model.zoom(into: row.node) }
-            }
-            Button("Reveal in Finder") { model.revealInFinder(row.node) }
-            Button(model.isStaged(row.node) ? "Remove from selection" : "Select for Trash") {
-                model.toggleStaged(row.node)
-            }
+            if row.isDirectory { Button("Open in map", action: onOpen) }
+            Button("Reveal in Finder", action: onReveal)
+            Button(isStaged ? "Remove from selection" : "Select for Trash", action: onToggleStaged)
         }
         .help(row.node.path)
     }

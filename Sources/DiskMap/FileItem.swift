@@ -41,23 +41,31 @@ final class FileItem {
         measure == .physical ? physicalSize : logicalSize
     }
 
-    var url: URL {
+    /// Built by walking the parent chain and joining strings.
+    ///
+    /// Deliberately not via `URL(fileURLWithPath:)`: that form stats the file to
+    /// decide whether it is a directory, and the sidebar asks for paths often
+    /// enough (tooltips on every visible row) that it showed up as `lstat` in a
+    /// profile of navigation.
+    var path: String {
         var components: [String] = []
         var node: FileItem? = self
         while let current = node {
             components.append(current.name)
             node = current.parent
         }
-        components.reverse()
         // The root's name is an absolute path; the rest are path components.
-        var url = URL(fileURLWithPath: components[0], isDirectory: true)
-        for component in components.dropFirst() {
-            url.appendPathComponent(component)
+        var path = components.removeLast()
+        if path.hasSuffix("/") { path.removeLast() }
+        for component in components.reversed() {
+            path += "/" + component
         }
-        return url
+        return path
     }
 
-    var path: String { url.path }
+    /// `isDirectory` is passed explicitly for the same reason: it is already
+    /// known here, and supplying it keeps URL construction off the filesystem.
+    var url: URL { URL(fileURLWithPath: path, isDirectory: isDirectory) }
 
     var depth: Int {
         var d = 0

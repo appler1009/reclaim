@@ -26,10 +26,10 @@ struct TreemapRepresentable: NSViewRepresentable {
         init(model: AppModel) { self.model = model }
 
         nonisolated func treemap(_ view: TreemapView, didHover cell: TreemapCell?) {
-            MainActor.assumeIsolated { model.hoverItem = cell?.item }
+            MainActor.assumeIsolated { model.setHover(cell?.item) }
         }
         nonisolated func treemap(_ view: TreemapView, didSelect cell: TreemapCell?) {
-            MainActor.assumeIsolated { model.selectedItem = cell?.item }
+            MainActor.assumeIsolated { model.setSelection(cell?.item) }
         }
         nonisolated func treemap(_ view: TreemapView, didActivate item: FileItem) {
             MainActor.assumeIsolated { model.zoom(into: item) }

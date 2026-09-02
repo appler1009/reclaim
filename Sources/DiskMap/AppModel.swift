@@ -13,15 +13,25 @@ final class AppModel: ObservableObject {
     @Published var phase: Phase = .idle
     @Published var progress = ScanProgress(filesScanned: 0, bytesScanned: 0, currentPath: "")
     @Published var scanRoot: FileItem?
-    @Published var zoomRoot: FileItem?
-    @Published var breakdown = Breakdown()
+    /// The navigation state below is deliberately not `@Published`.
+    ///
+    /// One navigation touches the folder in view, its breakdown, the direction of
+    /// travel and the selection; as published properties that was four separate
+    /// SwiftUI passes, and a profile of continuous drilling showed the view-graph
+    /// update was the entire cost of a step (15ms of 15.6ms). They are changed
+    /// together and announced once, through `notify()`.
+    private(set) var zoomRoot: FileItem?
+    private(set) var breakdown = Breakdown()
     /// Items the user has picked for the Trash, in the order they picked them.
-    @Published var staged: [FileItem] = []
+    private(set) var staged: [FileItem] = []
     /// Direction of the last navigation, so the sidebar slides the same way the
     /// map zooms.
-    @Published private(set) var navigatedInwards = true
-    @Published var hoverItem: FileItem?
-    @Published var selectedItem: FileItem?
+    private(set) var navigatedInwards = true
+    /// Hover lives in its own observable object so moving the pointer across the
+    /// map repaints one readout instead of re-evaluating the whole window: a
+    /// full SwiftUI pass costs ~10ms, and hover changes continuously.
+    let hover = HoverState()
+    private(set) var selectedItem: FileItem?
     @Published var measure: SizeMeasure = .physical
     @Published var lastReclaimed: UInt64 = 0
     @Published var scannedURL: URL?
@@ -53,6 +63,17 @@ final class AppModel: ObservableObject {
     deinit {
         let center = NSWorkspace.shared.notificationCenter
         volumeObservers.forEach { center.removeObserver($0) }
+    }
+
+    private var stress: NavigationStress?
+
+    /// `Reclaim --stress-navigate` drives navigation continuously once a scan
+    /// finishes, for profiling the real UI path.
+    func startNavigationStressIfRequested() {
+        guard CommandLine.arguments.contains("--stress-navigate") else { return }
+        let stress = NavigationStress(model: self)
+        self.stress = stress
+        stress.start()
     }
 
     /// `Reclaim --open <path>` starts a scan as soon as the window appears.
@@ -90,6 +111,21 @@ final class AppModel: ObservableObject {
     var viewedBytes: UInt64 { zoomRoot?.size(measure) ?? 0 }
     var stagedBytes: UInt64 { staged.reduce(0) { $0 + $1.size(measure) } }
     var stagedMarks: Set<ObjectIdentifier> { Set(staged.map { ObjectIdentifier($0) }) }
+
+    /// Announces one batch of navigation/selection changes to SwiftUI.
+    private func notify() {
+        objectWillChange.send()
+    }
+
+    func setHover(_ item: FileItem?) {
+        hover.set(item)
+    }
+
+    func setSelection(_ item: FileItem?) {
+        guard item !== selectedItem else { return }
+        selectedItem = item
+        notify()
+    }
 
     // MARK: - Scanning
 
@@ -148,6 +184,7 @@ final class AppModel: ObservableObject {
                 self.zoomRoot = root
                 self.refreshBreakdown()
                 self.phase = .ready
+                self.startNavigationStressIfRequested()
                 Log.info("scan finished", [
                     "path": url.path,
                     "seconds": String(format: "%.2f", Date().timeIntervalSince(startedAt)),
@@ -185,6 +222,7 @@ final class AppModel: ObservableObject {
 
     /// Selecting a folder implies its contents, so drop anything already covered.
     func toggleStaged(_ node: FileItem) {
+        defer { notify() }
         if let index = staged.firstIndex(where: { $0 === node }) {
             staged.remove(at: index)
             return
@@ -194,7 +232,10 @@ final class AppModel: ObservableObject {
         staged.append(node)
     }
 
-    func clearStaging() { staged.removeAll() }
+    func clearStaging() {
+        staged.removeAll()
+        notify()
+    }
 
     // MARK: - Deleting
 
@@ -231,6 +272,7 @@ final class AppModel: ObservableObject {
         lastReclaimed += report.bytes
         volumeFree += report.bytes
         selectedItem = nil
+        hover.set(nil)
         // A removed node may be the folder currently in view.
         if let zoomRoot, zoomRoot.parent == nil, zoomRoot !== scanRoot { self.zoomRoot = scanRoot }
         refreshBreakdown()
@@ -243,28 +285,30 @@ final class AppModel: ObservableObject {
         guard item.isDirectory, !item.children.isEmpty else { return }
         navigatedInwards = true
         zoomRoot = item
-        refreshBreakdown()
+        breakdown = Breakdown.of(item, measure: measure)
+        notify()
     }
 
     func zoomOut() {
-        if let parent = zoomRoot?.parent {
-            navigatedInwards = false
-            zoomRoot = parent
-            refreshBreakdown()
-        }
+        guard let parent = zoomRoot?.parent else { return }
+        navigatedInwards = false
+        zoomRoot = parent
+        breakdown = Breakdown.of(parent, measure: measure)
+        notify()
     }
 
     func show(_ node: FileItem) {
         let target = node.isDirectory ? node : (node.parent ?? zoomRoot)
         navigatedInwards = !(zoomRoot?.isDescendant(of: target ?? node) ?? true)
-        zoomRoot = node.isDirectory ? node : (node.parent ?? zoomRoot)
+        zoomRoot = target
         selectedItem = node
-        refreshBreakdown()
+        breakdown = target.map { Breakdown.of($0, measure: measure) } ?? Breakdown()
+        notify()
     }
 
     func refreshBreakdown() {
-        guard let zoomRoot else { breakdown = Breakdown(); return }
-        breakdown = Breakdown.of(zoomRoot, measure: measure)
+        breakdown = zoomRoot.map { Breakdown.of($0, measure: measure) } ?? Breakdown()
+        notify()
     }
 
     var breadcrumb: [FileItem] {
