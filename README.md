@@ -3,6 +3,9 @@
 A native macOS app that shows **where your disk space actually went** — and lets you
 move things to the Trash yourself, on your own judgement.
 
+> Early days: 0.x, in use but still being shaken out. It only ever moves things to the
+> Trash, never deletes outright, so the worst it can do is make you put something back.
+
 ![Reclaim showing a scanned folder as a treemap, with a ranked list beside it](docs/screenshot.png)
 
 It does not tell you what you should delete. It measures, shows, and gets out of the way.
@@ -162,13 +165,13 @@ tree has uncommitted changes — a build always says exactly what it came from.
 
 ```sh
 ./Scripts/build_app.sh release
-# built dist/Reclaim.app — version 1.0.0 (build 32, commit 55a249f)
+# built dist/Reclaim.app — version 0.1.0 (build 36, commit 9d1d18a)
 ```
 
 To release: bump `VERSION`, commit, and push a matching tag.
 
 ```sh
-echo 1.1.0 > VERSION && git commit -am "release 1.1.0" && git tag v1.1.0 && git push --tags
+echo 0.2.0 > VERSION && git commit -am "release 0.2.0" && git tag v0.2.0 && git push --tags
 ```
 
 `.github/workflows/release.yml` refuses two mistakes before building anything: a tag whose

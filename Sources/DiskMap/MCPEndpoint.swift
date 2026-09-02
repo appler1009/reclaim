@@ -14,7 +14,10 @@ struct MCPEndpoint {
 
     static let protocolVersion = "2024-11-05"
     static let serverName = "Reclaim"
-    static let serverVersion = "1.0"
+    /// Taken from the bundle rather than written here, so what the server tells
+    /// a client is the version that was actually built.
+    static let serverVersion = Bundle.main.infoDictionary?["CFBundleShortVersionString"]
+        as? String ?? "0.0.0"
 
     init(queries: DiskQueries = DiskQueries(),
          scanner: @escaping (String) -> DiskQueries.TargetSummary? = MCPEndpoint.liveScan) {
