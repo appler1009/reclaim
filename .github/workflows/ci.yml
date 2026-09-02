@@ -1,0 +1,50 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  test:
+    # The app uses recent SwiftUI and AppKit; pick the newest runner image
+    # available so the SDK is new enough to compile it.
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # The build number is the commit count, so the whole history is needed:
+          # a shallow clone would number every build 1.
+          fetch-depth: 0
+
+      - name: Show toolchain
+        run: |
+          swift --version
+          xcodebuild -version
+
+      - name: Test
+        run: swift test
+
+      - name: Build app bundle
+        # No signing identity on a runner: the script falls back to ad-hoc,
+        # which is enough to prove the bundle assembles and launches checks pass.
+        run: ./Scripts/build_app.sh release
+
+      - name: Verify the bundle
+        run: |
+          /usr/libexec/PlistBuddy -c "Print :CFBundleShortVersionString" dist/Reclaim.app/Contents/Info.plist
+          /usr/libexec/PlistBuddy -c "Print :CFBundleVersion" dist/Reclaim.app/Contents/Info.plist
+          codesign --verify --strict --verbose=1 dist/Reclaim.app
+          # The headless entry points are the cheapest end-to-end check there is.
+          ./dist/Reclaim.app/Contents/MacOS/Reclaim --volumes
+
+      - name: Package for download
+        # Zipped with ditto rather than handed to the artifact action directly:
+        # a .app is a directory, and uploading it loses the executable bit.
+        run: ditto -c -k --keepParent dist/Reclaim.app dist/Reclaim.zip
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Reclaim-app
+          path: dist/Reclaim.zip

@@ -29,6 +29,20 @@ as a single level of tiles, each sized by the space it takes:
   paths in the confirmation, and it goes to the **Trash** — `FileManager.trashItem`, never
   an outright delete. You can put it all back.
 
+## For agents
+
+While the app is running it serves MCP on `http://127.0.0.1:8739/mcp` — loopback
+only, since this hands out a map of the disk. Six tools answer from the recorded
+history, so an agent can ask what is taking up space and what has grown without
+anyone relaying screenshots:
+
+```sh
+claude mcp add --transport http reclaim http://127.0.0.1:8739/mcp
+```
+
+`list_targets`, `disk_usage`, `largest_items`, `growth`, `scan_history`, and
+`scan_now` for a folder with no history yet. The address is also on the File menu.
+
 ## Build and run
 
 ```sh
@@ -76,7 +90,9 @@ Reclaim --open <path> --stress-navigate   # drive the UI and time each step
 | `Breakdown.swift` | Contents rows and per-type totals for the folder in view. |
 | `Volumes.swift` | Mounted volumes with capacity and free space, refreshed on mount/unmount. |
 | `AppModel.swift` | Scan lifecycle, navigation, selection, and the Trash operation. |
-| `Log.swift` | Ships structured logs to a local [LogDock](../logdock) collector when one is running. |
+| `Log.swift`, `LogShipper.swift` | Ships structured logs to a local [LogDock](../logdock) collector when one is running, tagged with the version, build and commit. |
+| `Snapshot.swift`, `SnapshotStore.swift` | What each finished scan looked like, kept as JSON so history survives quitting. |
+| `DiskQueries.swift`, `MCPEndpoint.swift`, `MCPServer.swift` | The MCP server: questions over the history, the JSON-RPC that answers them, and a loopback-only transport. |
 
 ### Performance
 
@@ -122,7 +138,44 @@ proportional to size, crowded folders collapse), path building without touching 
 filesystem, the per-family roll-ups including after a deletion, and the zoom transform at
 both ends of the movement.
 
+## Versioning and releases
+
+The marketing version lives in `VERSION`, one line, edited by hand. The build
+number is not kept anywhere: it is `git rev-list --count HEAD`, so it is
+monotonic, identical for everyone who builds the same commit, and needs no state
+outside the repository. The commit itself is recorded in the bundle as
+`ReclaimSourceCommit`, with `-dirty` appended when the tree has uncommitted
+changes — a build always says exactly what it came from.
+
+```sh
+./Scripts/build_app.sh release
+# built dist/Reclaim.app — version 1.0.0 (build 31, commit e015914)
+```
+
+To release: bump `VERSION`, commit, and push a matching tag.
+
+```sh
+echo 1.1.0 > VERSION && git commit -am "release 1.1.0" && git tag v1.1.0 && git push --tags
+```
+
+`.github/workflows/release.yml` refuses to build a tag that disagrees with
+`VERSION`, then tests, builds, signs, notarizes, and attaches a zip to the
+GitHub release. `.github/workflows/ci.yml` tests and builds every push. Both use
+a full checkout, since a shallow clone would number every build 1.
+
+Signing and notarizing in CI are optional and driven by repository secrets; with
+none set the workflow still produces an ad-hoc signed app, which runs locally but
+shows Gatekeeper's unidentified-developer warning.
+
+| Secret | For |
+|---|---|
+| `DEVELOPER_ID_P12` | base64 of the exported Developer ID certificate (.p12) |
+| `P12_PASSWORD` | its export password |
+| `TEAM_ID` | the signing team |
+| `NOTARY_APPLE_ID`, `NOTARY_PASSWORD` | notarization (app-specific password) |
+
 ## Requirements
 
-macOS 14+, Swift 6 toolchain (Xcode 16+). `LogShip` is a local path dependency on
-`../logdock`; logging is inert if the collector is not running.
+macOS 14+, Swift 6 toolchain (Xcode 16+). No package dependencies: the app talks
+to [LogDock](../logdock) over its HTTP intake directly, and speaks MCP with its
+own JSON-RPC, so a clone builds on its own.

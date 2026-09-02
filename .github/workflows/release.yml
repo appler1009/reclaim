@@ -1,0 +1,100 @@
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Tag to release (e.g. v1.0.0)"
+        required: true
+
+jobs:
+  release:
+    runs-on: macos-15
+    permissions:
+      contents: write        # to create the release and upload the archive
+    env:
+      # `secrets` cannot be read from a step's `if:`, so the decisions are made
+      # once here and the steps test these instead.
+      HAS_CERTIFICATE: ${{ secrets.DEVELOPER_ID_P12 != '' }}
+      HAS_NOTARY: ${{ secrets.NOTARY_APPLE_ID != '' }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0     # the build number is the commit count
+
+      - name: Check the tag matches VERSION
+        # A tag that disagrees with the file is a mistake worth failing on
+        # rather than shipping something named two different things.
+        env:
+          TAG: ${{ github.event.inputs.tag || github.ref_name }}
+        run: |
+          FILE_VERSION="$(cat VERSION)"
+          if [ "$TAG" != "v$FILE_VERSION" ]; then
+            echo "tag $TAG does not match VERSION ($FILE_VERSION)" >&2
+            exit 1
+          fi
+
+      - name: Test
+        run: swift test
+
+      - name: Import signing certificate
+        # Optional: without these secrets the build is ad-hoc signed, which still
+        # runs locally but shows Gatekeeper's unidentified-developer warning.
+        if: env.HAS_CERTIFICATE == 'true'
+        env:
+          DEVELOPER_ID_P12: ${{ secrets.DEVELOPER_ID_P12 }}
+          P12_PASSWORD: ${{ secrets.P12_PASSWORD }}
+        run: |
+          KEYCHAIN=build.keychain
+          KEYCHAIN_PASSWORD="$(uuidgen)"
+          security create-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN"
+          security set-keychain-settings -lut 900 "$KEYCHAIN"
+          security unlock-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN"
+          echo "$DEVELOPER_ID_P12" | base64 --decode > certificate.p12
+          security import certificate.p12 -k "$KEYCHAIN" -P "$P12_PASSWORD" \
+            -T /usr/bin/codesign -T /usr/bin/security
+          security set-key-partition-list -S apple-tool:,apple:,codesign: \
+            -s -k "$KEYCHAIN_PASSWORD" "$KEYCHAIN" >/dev/null
+          security list-keychains -d user -s "$KEYCHAIN" login.keychain-db
+          rm certificate.p12
+
+      - name: Build
+        env:
+          TEAM_ID: ${{ secrets.TEAM_ID }}
+        run: ./Scripts/build_app.sh release
+
+      - name: Notarize
+        # Also optional; a release without it still installs, with a warning.
+        if: env.HAS_NOTARY == 'true'
+        env:
+          NOTARY_APPLE_ID: ${{ secrets.NOTARY_APPLE_ID }}
+          NOTARY_PASSWORD: ${{ secrets.NOTARY_PASSWORD }}
+          NOTARY_TEAM_ID: ${{ secrets.TEAM_ID }}
+        run: |
+          ditto -c -k --keepParent dist/Reclaim.app dist/Reclaim.zip
+          xcrun notarytool submit dist/Reclaim.zip \
+            --apple-id "$NOTARY_APPLE_ID" \
+            --password "$NOTARY_PASSWORD" \
+            --team-id "$NOTARY_TEAM_ID" --wait
+          xcrun stapler staple dist/Reclaim.app
+          rm dist/Reclaim.zip
+
+      - name: Package
+        run: |
+          ditto -c -k --keepParent dist/Reclaim.app dist/Reclaim.zip
+          shasum -a 256 dist/Reclaim.zip | tee dist/Reclaim.zip.sha256
+
+      - name: Publish
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            dist/Reclaim.zip
+            dist/Reclaim.zip.sha256
+          generate_release_notes: true
+          body: |
+            Reclaim ${{ github.ref_name }} — build is the commit count at the tag.
+
+            Unzip and move Reclaim.app to /Applications. A whole-disk scan needs
+            Full Disk Access in System Settings → Privacy & Security.

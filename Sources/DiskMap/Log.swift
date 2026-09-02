@@ -1,9 +1,8 @@
 import Foundation
-import LogShip
 
-/// Logging facade over LogShip (see ../logdock). Fire-and-forget: every call
-/// returns immediately and failures are swallowed by LogShip itself, so logging
-/// can never change how the app behaves.
+/// Logging facade over LogShipper, which speaks to a local LogDock collector
+/// (see ../logdock). Fire-and-forget: every call returns immediately and
+/// failures are swallowed, so logging can never change how the app behaves.
 ///
 /// No collector URL or token is compiled in. On this machine the collector's own
 /// preferences supply the token, so a dev build needs no configuration; an
@@ -17,13 +16,11 @@ enum Log {
         let environment = ProcessInfo.processInfo.environment
         let url = environment["RECLAIM_LOGDOCK_URL"].flatMap(URL.init(string:)) ?? defaultIntakeURL
         guard let token = environment["RECLAIM_LOGDOCK_TOKEN"] ?? collectorToken() else { return }
-        Task {
-            await LogShip.shared.configure(collectorURL: url, token: token, source: source)
-            await LogShip.shared.info("launched", metadata: [
-                "os": ProcessInfo.processInfo.operatingSystemVersionString,
-                "cores": "\(ProcessInfo.processInfo.activeProcessorCount)",
-            ])
-        }
+        LogShipper.shared.configure(collectorURL: url, token: token, source: source)
+        info("launched", [
+            "os": ProcessInfo.processInfo.operatingSystemVersionString,
+            "cores": "\(ProcessInfo.processInfo.activeProcessorCount)",
+        ])
     }
 
     /// The locally running LogDock keeps its intake token in plain preferences.
@@ -33,18 +30,18 @@ enum Log {
     }
 
     static func debug(_ message: String, _ metadata: [String: String]? = nil) {
-        Task { await LogShip.shared.debug(message, metadata: metadata) }
+        LogShipper.shared.log(level: "debug", message: message, metadata: metadata)
     }
 
     static func info(_ message: String, _ metadata: [String: String]? = nil) {
-        Task { await LogShip.shared.info(message, metadata: metadata) }
+        LogShipper.shared.log(level: "info", message: message, metadata: metadata)
     }
 
     static func warning(_ message: String, _ metadata: [String: String]? = nil) {
-        Task { await LogShip.shared.warning(message, metadata: metadata) }
+        LogShipper.shared.log(level: "warning", message: message, metadata: metadata)
     }
 
     static func error(_ message: String, _ metadata: [String: String]? = nil) {
-        Task { await LogShip.shared.error(message, metadata: metadata) }
+        LogShipper.shared.log(level: "error", message: message, metadata: metadata)
     }
 }

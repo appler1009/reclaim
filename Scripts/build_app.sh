@@ -8,6 +8,23 @@ APP="dist/Reclaim.app"
 TEAM_ID="${TEAM_ID:-TN2RQ5P647}"
 BUNDLE_ID="${BUNDLE_ID:-com.appler.reclaim}"
 
+# The marketing version lives in VERSION, one line, edited by hand for a release.
+VERSION="${VERSION:-$(cat VERSION 2>/dev/null || echo 0.0.0)}"
+
+# The build number is the commit count: monotonic, identical for everyone who
+# builds the same commit, and needing no state outside the repository. A build
+# from a tree that is not a git checkout, or a shallow clone, falls back to 0 —
+# which reads as "unofficial" rather than pretending to be a real build.
+if BUILD_COUNT="$(git rev-list --count HEAD 2>/dev/null)"; then
+  BUILD="$BUILD_COUNT"
+else
+  BUILD="0"
+fi
+COMMIT="$(git rev-parse --short HEAD 2>/dev/null || echo unknown)"
+if ! git diff --quiet 2>/dev/null || ! git diff --cached --quiet 2>/dev/null; then
+  COMMIT="$COMMIT-dirty"
+fi
+
 swift build -c "$CONFIG"
 BIN="$(swift build -c "$CONFIG" --show-bin-path)/DiskMap"
 
@@ -34,8 +51,9 @@ cat > "$APP/Contents/Info.plist" <<PLIST
   <key>CFBundleExecutable</key><string>Reclaim</string>
   <key>CFBundleIconFile</key><string>Reclaim</string>
   <key>CFBundlePackageType</key><string>APPL</string>
-  <key>CFBundleShortVersionString</key><string>1.0</string>
-  <key>CFBundleVersion</key><string>1</string>
+  <key>CFBundleShortVersionString</key><string>$VERSION</string>
+  <key>CFBundleVersion</key><string>$BUILD</string>
+  <key>ReclaimSourceCommit</key><string>$COMMIT</string>
   <key>LSMinimumSystemVersion</key><string>14.0</string>
   <key>NSHighResolutionCapable</key><true/>
   <key>NSSupportsAutomaticTermination</key><true/>
@@ -62,4 +80,4 @@ else
 fi
 
 codesign --verify --strict --verbose=1 "$APP"
-echo "built $APP"
+echo "built $APP — version $VERSION (build $BUILD, commit $COMMIT)"
