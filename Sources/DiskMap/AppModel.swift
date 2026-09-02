@@ -443,6 +443,31 @@ final class AppModel: ObservableObject {
         return chain.reversed()
     }
 
+    /// Directories above the scan root, nearest first, as places a new scan
+    /// could start. The hierarchy inside the scan is `breadcrumb`; this is what
+    /// lies beyond it, so "up" does not dead-end at whatever was first chosen.
+    var enclosingScanTargets: [URL] {
+        guard let scannedURL, scannedURL.path != "/" else { return [] }
+        var targets: [URL] = []
+        var url = scannedURL.standardizedFileURL
+        while url.path != "/", targets.count < 6 {
+            let parent = url.deletingLastPathComponent().standardizedFileURL
+            guard parent.path != url.path else { break }
+            targets.append(parent)
+            url = parent
+        }
+        return targets
+    }
+
+    /// Name to show for a folder that has not been scanned yet.
+    func displayName(for url: URL) -> String {
+        if url.path == "/" {
+            return volumes.first { $0.isStartupVolume }?.name ?? "Macintosh HD"
+        }
+        if let volume = volumes.first(where: { $0.url == url }) { return volume.name }
+        return url.lastPathComponent.isEmpty ? url.path : url.lastPathComponent
+    }
+
     func revealInFinder(_ item: FileItem) {
         NSWorkspace.shared.activateFileViewerSelecting([URL(fileURLWithPath: item.path)])
     }

@@ -58,25 +58,27 @@ struct ContentView: View {
         .preferredColorScheme(.dark)
         .toolbar {
             ToolbarItem(placement: .navigation) {
-                // Click goes up one level; holding it offers the whole trail,
-                // which is what the breadcrumb bar used to be for.
-                Menu {
-                    ForEach(Array(model.breadcrumb.dropLast().enumerated().reversed()),
-                            id: \.offset) { index, node in
-                        Button {
-                            model.show(node)
-                        } label: {
-                            Label(index == 0 ? model.scanTargetName : node.name,
-                                  systemImage: index == 0 ? "externaldrive" : "folder")
-                        }
+                // At the scan root there is nothing to go up to inside the scan,
+                // but the menu still offers to scan a folder further up — so the
+                // control is never a dead end.
+                if model.zoomRoot === model.scanRoot || model.zoomRoot == nil {
+                    Menu {
+                        hierarchyMenu
+                    } label: {
+                        Label("Up", systemImage: "arrow.up.left")
                     }
-                } label: {
-                    Label("Up", systemImage: "arrow.up.left")
-                } primaryAction: {
-                    model.zoomOut()
+                    .disabled(model.scanRoot == nil)
+                    .help("Scan a folder further up")
+                } else {
+                    Menu {
+                        hierarchyMenu
+                    } label: {
+                        Label("Up", systemImage: "arrow.up.left")
+                    } primaryAction: {
+                        model.zoomOut()
+                    }
+                    .help("Go to the enclosing folder (⌘↑). Hold for the whole hierarchy.")
                 }
-                .disabled(model.zoomRoot == nil || model.zoomRoot === model.scanRoot)
-                .help("Go to the enclosing folder (⌘↑). Hold to jump further up.")
             }
             ToolbarItemGroup(placement: .primaryAction) {
                 if model.phase == .ready {
@@ -155,6 +157,38 @@ struct ContentView: View {
             }
         }
         RunLoop.main.add(timer, forMode: .common)
+    }
+
+    /// Everywhere "up" can lead: the folders between here and the scan root,
+    /// then the directories above the scan root, which start a new scan.
+    @ViewBuilder
+    private var hierarchyMenu: some View {
+        let ancestors = Array(model.breadcrumb.dropLast().reversed())
+        if !ancestors.isEmpty {
+            Section("In this scan") {
+                ForEach(Array(ancestors.enumerated()), id: \.offset) { index, node in
+                    Button {
+                        model.show(node)
+                    } label: {
+                        Label(node === model.scanRoot ? model.scanTargetName : node.name,
+                              systemImage: index == ancestors.count - 1 ? "externaldrive" : "folder")
+                    }
+                }
+            }
+        }
+        let enclosing = model.enclosingScanTargets
+        if !enclosing.isEmpty {
+            Section("Scan further up") {
+                ForEach(enclosing, id: \.path) { url in
+                    Button {
+                        model.scan(url)
+                    } label: {
+                        Label(model.displayName(for: url),
+                              systemImage: url.path == "/" ? "externaldrive" : "folder.badge.gearshape")
+                    }
+                }
+            }
+        }
     }
 
     /// The title bar names what is open; the breadcrumb below handles navigation
