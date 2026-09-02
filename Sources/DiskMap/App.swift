@@ -201,8 +201,12 @@ final class WindowSizeGuard {
         }
         let center = NotificationCenter.default
         observers.append(center.addObserver(forName: NSWindow.didResizeNotification,
-                                            object: nil, queue: .main) { [weak self] _ in
-            self?.checkMainWindow()
+                                            object: nil, queue: .main) { [weak self] note in
+            // Menus, popovers and panels post resizes too. Reacting to those is
+            // what made right-clicking a tile move the window.
+            guard let window = note.object as? NSWindow,
+                  window.styleMask.contains(.titled), window.contentView != nil else { return }
+            self?.check(window)
         })
         observers.append(center.addObserver(forName: NSApplication.didChangeScreenParametersNotification,
                                             object: nil, queue: .main) { [weak self] _ in
@@ -239,10 +243,11 @@ final class WindowSizeGuard {
     private func checkMainWindow() {
         guard let window = NSApp.windows.first(where: {
             $0.styleMask.contains(.titled) && $0.contentView != nil
-        }) else {
-            Log.debug("size guard: no titled window yet")
-            return
-        }
+        }) else { return }
+        check(window)
+    }
+
+    private func check(_ window: NSWindow) {
         if window.styleMask.contains(.fullScreen) {
             // Restored into fullscreen without the user ever asking: leave it.
             if Date() < launchGraceEnds,
@@ -253,32 +258,24 @@ final class WindowSizeGuard {
             return
         }
         guard !window.inLiveResize else { return }
+        // Measured against the screen the window is actually on. Falling back to
+        // NSScreen.main was wrong: that follows the key window, so while a menu
+        // is open it can name a different display, and a window judged against
+        // the wrong screen gets "corrected" for no reason.
+        guard let visible = window.screen?.visibleFrame else { return }
 
         let key = ObjectIdentifier(window)
-        if isOversized(window.frame.size, on: window) {
-            let target = preferred[key] ?? defaultSize
+        let preferredSize = preferred[key] ?? defaultSize
+        if let corrected = WindowFit.correction(for: window.frame, in: visible,
+                                                preferred: preferredSize) {
             Log.debug("restored self-resized window", [
                 "was": "\(Int(window.frame.width))x\(Int(window.frame.height))",
-                "to": "\(Int(target.width))x\(Int(target.height))",
+                "to": "\(Int(corrected.width))x\(Int(corrected.height))",
             ])
-            apply(target, to: window)
-        } else {
+            window.setFrame(corrected, display: true, animate: false)
+        } else if !WindowFit.isOversized(window.frame.size, on: visible) {
             preferred[key] = window.frame.size
         }
-    }
-
-    private func isOversized(_ size: NSSize, on window: NSWindow) -> Bool {
-        guard let visible = (window.screen ?? NSScreen.main)?.visibleFrame else { return false }
-        return size.width >= visible.width * 0.9 || size.height >= visible.height * 0.9
-    }
-
-    private func apply(_ size: NSSize, to window: NSWindow) {
-        guard let visible = (window.screen ?? NSScreen.main)?.visibleFrame else { return }
-        let clamped = NSSize(width: min(size.width, visible.width * 0.9),
-                             height: min(size.height, visible.height * 0.9))
-        let origin = NSPoint(x: visible.midX - clamped.width / 2,
-                             y: visible.midY - clamped.height / 2)
-        window.setFrame(NSRect(origin: origin, size: clamped), display: true, animate: false)
     }
 }
 
