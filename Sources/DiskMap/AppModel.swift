@@ -142,6 +142,18 @@ final class AppModel: ObservableObject {
         NSWorkspace.shared.open(url)
     }
 
+    /// Short name for what is being scanned: a volume by its name, otherwise the
+    /// folder's own name. The scan root's `name` is a full path, which is too
+    /// long for a breadcrumb or a window title.
+    var scanTargetName: String {
+        guard let url = scannedURL else { return "Reclaim" }
+        if url.path == "/" {
+            return volumes.first { $0.isStartupVolume }?.name ?? "Macintosh HD"
+        }
+        if let volume = volumes.first(where: { $0.url == url }) { return volume.name }
+        return url.lastPathComponent.isEmpty ? url.path : url.lastPathComponent
+    }
+
     var scannedBytes: UInt64 { scanRoot?.size(measure) ?? 0 }
     var viewedBytes: UInt64 { zoomRoot?.size(measure) ?? 0 }
     var stagedBytes: UInt64 { staged.reduce(0) { $0 + $1.size(measure) } }

@@ -45,6 +45,12 @@ struct ContentView: View {
             model.scanLaunchArgumentIfPresent()
             startResizeStressIfRequested()
         }
+        // The title bar names what is open, not the app — the app's own name is
+        // already on screen in the header, and repeating it says nothing. This
+        // also makes the window identifiable in Mission Control and the window
+        // menu when several scans are open.
+        .navigationTitle(windowTitle)
+        .navigationSubtitle(windowSubtitle)
         .preferredColorScheme(.dark)
         .toolbar {
             ToolbarItemGroup(placement: .primaryAction) {
@@ -124,6 +130,18 @@ struct ContentView: View {
             }
         }
         RunLoop.main.add(timer, forMode: .common)
+    }
+
+    /// The title bar names what is open; the breadcrumb below handles navigation
+    /// within it, so the two do not repeat each other.
+    private var windowTitle: String {
+        model.scanRoot == nil ? "Reclaim" : model.scanTargetName
+    }
+
+    /// The absolute path of the folder in view — the one place it is spelled out
+    /// in full, which is why the breadcrumb can stay short.
+    private var windowSubtitle: String {
+        model.zoomRoot?.path ?? ""
     }
 
     private func performTrash() {
@@ -273,7 +291,7 @@ private struct MapPane: View {
                                     .foregroundStyle(.white.opacity(0.25))
                             }
                             Button { model.show(node) } label: {
-                                Text(index == 0 ? node.name : node.name)
+                                Text(index == 0 ? model.scanTargetName : node.name)
                                     .font(.system(size: 11, weight: index == model.breadcrumb.count - 1 ? .semibold : .regular))
                                     .foregroundStyle(.white.opacity(index == model.breadcrumb.count - 1 ? 0.92 : 0.5))
                             }
