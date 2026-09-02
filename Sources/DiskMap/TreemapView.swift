@@ -44,6 +44,28 @@ final class TreemapView: NSView {
 
     override var isFlipped: Bool { true }
     override var acceptsFirstResponder: Bool { true }
+    /// The map paints every pixel it owns, so AppKit need not clear behind it.
+    override var isOpaque: Bool { true }
+
+    override init(frame frameRect: NSRect) {
+        super.init(frame: frameRect)
+        configureLayer()
+    }
+
+    required init?(coder: NSCoder) {
+        super.init(coder: coder)
+        configureLayer()
+    }
+
+    /// Redraw while the view is being resized rather than letting AppKit stretch
+    /// or clear the old contents — dragging the sidebar divider resizes this view
+    /// continuously, and the default policy showed as a flash on every frame.
+    private func configureLayer() {
+        wantsLayer = true
+        layerContentsRedrawPolicy = .duringViewResize
+        layer?.backgroundColor = Theme.background.cgColor
+        layer?.isOpaque = true
+    }
 
     func show(root: FileItem?) {
         let previousLayout = layout
@@ -95,6 +117,15 @@ final class TreemapView: NSView {
 
     override func setFrameSize(_ newSize: NSSize) {
         super.setFrameSize(newSize)
+        if ProcessInfo.processInfo.environment["RECLAIM_TRACE_MAP"] != nil, let window {
+            let inWindow = convert(bounds, to: nil)
+            Log.debug("map geometry", [
+                "frame": "\(Int(frame.origin.x)),\(Int(frame.origin.y)) \(Int(frame.width))x\(Int(frame.height))",
+                "inWindow": "\(Int(inWindow.minY))..\(Int(inWindow.maxY))",
+                "windowHeight": "\(Int(window.frame.height))",
+                "visibleRect": "\(Int(visibleRect.minY))..\(Int(visibleRect.maxY))",
+            ])
+        }
         rebuild()
     }
 
@@ -123,6 +154,7 @@ final class TreemapView: NSView {
                                          minimumArea: minimumArea, maximumDepth: 1)
             expandedStaged = nil
             lastLayoutDuration = Double(DispatchTime.now().uptimeNanoseconds - started) / 1e9
+            refreshHoverForNewLayout()
             needsDisplay = true
             return
         }
@@ -137,9 +169,25 @@ final class TreemapView: NSView {
                 self.layout = computed
                 self.expandedStaged = nil
                 self.lastLayoutDuration = elapsed
+                self.refreshHoverForNewLayout()
                 self.needsDisplay = true
             }
         }
+    }
+
+    /// The cell under the pointer is remembered by value, so after a relayout —
+    /// resizing the sidebar, for one — the highlight would be drawn at the tile's
+    /// old rectangle. Re-resolve it against the cells that now exist.
+    private func refreshHoverForNewLayout() {
+        guard hovered != nil || transition != nil else { return }
+        guard let window, window.isKeyWindow else { hovered = nil; return }
+        let point = convert(window.mouseLocationOutsideOfEventStream, from: nil)
+        guard bounds.contains(point) else { hovered = nil; return }
+        let cell = layout.item(at: point)
+        if cell?.item !== hovered?.item {
+            delegate?.treemap(self, didHover: cell)
+        }
+        hovered = cell
     }
 
     // MARK: - Drawing
@@ -190,6 +238,7 @@ final class TreemapView: NSView {
     }
 
     private func drawLabels(in dirtyRect: NSRect) {
+        guard let context = NSGraphicsContext.current?.cgContext else { return }
         for cell in layout.cells
         where cell.rect.width > 52 && cell.rect.height > 18 && cell.rect.intersects(dirtyRect) {
             let paragraph = NSMutableParagraphStyle()
@@ -208,10 +257,17 @@ final class TreemapView: NSView {
                 .foregroundColor: ink.withAlphaComponent(light ? 0.82 : 0.95),
                 .paragraphStyle: paragraph,
             ].merging(shadow) { current, _ in current }
-            let inset = cell.rect.insetBy(dx: 5, dy: 4)
+            // Clip to the tile: a label must never bleed over its own border,
+            // and the text box below is allowed to be taller than what is left.
+            context.saveGState()
+            context.clip(to: cell.rect)
+            defer { context.restoreGState() }
+
+            let inset = cell.rect.insetBy(dx: 6, dy: 5)
             (cell.item.name as NSString).draw(
                 with: CGRect(x: inset.minX, y: inset.minY, width: inset.width, height: 14),
-                options: [.truncatesLastVisibleLine], attributes: nameAttributes)
+                options: [.usesLineFragmentOrigin, .truncatesLastVisibleLine],
+                attributes: nameAttributes)
 
             if cell.rect.height > 34 && cell.rect.width > 84 {
                 let detailAttributes: [NSAttributedString.Key: Any] = [
@@ -226,7 +282,8 @@ final class TreemapView: NSView {
                 }
                 (detail as NSString).draw(
                     with: CGRect(x: inset.minX, y: inset.minY + 15, width: inset.width, height: 13),
-                    options: [.truncatesLastVisibleLine], attributes: detailAttributes)
+                    options: [.usesLineFragmentOrigin, .truncatesLastVisibleLine],
+                    attributes: detailAttributes)
 
                 // A folder tile stands for everything inside it; say how much.
                 if cell.item.isDirectory, cell.rect.height > 52, cell.rect.width > 110 {
@@ -238,7 +295,8 @@ final class TreemapView: NSView {
                     let files = cell.item.fileCount
                     ("\(files.formatted()) file\(files == 1 ? "" : "s")" as NSString).draw(
                         with: CGRect(x: inset.minX, y: inset.minY + 29, width: inset.width, height: 12),
-                        options: [.truncatesLastVisibleLine], attributes: countAttributes)
+                        options: [.usesLineFragmentOrigin, .truncatesLastVisibleLine],
+                        attributes: countAttributes)
                 }
             }
         }

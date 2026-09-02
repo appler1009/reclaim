@@ -126,26 +126,42 @@ private struct HeaderBar: View {
                 Divider().frame(height: 26).overlay(Color.hairline)
 
                 // The one place sizes are reported: always the folder in view.
-                HStack(alignment: .firstTextBaseline, spacing: 6) {
-                    Text(ByteFormat.string(model.viewedBytes))
-                        .font(.system(size: 25, weight: .bold, design: .rounded))
-                        .monospacedDigit()
-                        .foregroundStyle(.white)
-                        .contentTransition(.numericText())
-                        .animation(.snappy(duration: 0.22), value: model.viewedBytes)
-                    if model.zoomRoot !== model.scanRoot, model.scannedBytes > 0 {
-                        Text("· \(Int((Double(model.viewedBytes) / Double(model.scannedBytes) * 100).rounded()))% of scan")
-                            .font(.system(size: 11)).foregroundStyle(.white.opacity(0.45))
+                VStack(alignment: .leading, spacing: 1) {
+                    HStack(alignment: .firstTextBaseline, spacing: 6) {
+                        Text(ByteFormat.string(model.viewedBytes))
+                            .font(.system(size: 25, weight: .bold, design: .rounded))
+                            .monospacedDigit()
+                            .foregroundStyle(.white)
+                            .contentTransition(.numericText())
+                            .animation(.snappy(duration: 0.22), value: model.viewedBytes)
+                        if model.zoomRoot !== model.scanRoot, model.scannedBytes > 0 {
+                            Text("· \(Int((Double(model.viewedBytes) / Double(model.scannedBytes) * 100).rounded()))% of scan")
+                                .font(.system(size: 11)).foregroundStyle(.white.opacity(0.45))
+                        }
                     }
+                    Overline(text: model.zoomRoot === model.scanRoot
+                             ? "Total \(model.measure == .physical ? "on disk" : "size")"
+                             : "This folder")
                 }
-                Metric(value: model.breakdown.files.formatted(), caption: "Files")
+                .help("Everything inside \(model.zoomRoot?.name ?? "this folder"), added up. "
+                      + "The toolbar chooses between space occupied on disk and the files' own size.")
+
+                Metric(value: model.breakdown.files.formatted(), caption: "Files inside")
                     .contentTransition(.numericText())
                     .animation(.snappy(duration: 0.22), value: model.breakdown.files)
+                    .help("Files anywhere below this folder, however deeply nested. Folders are not counted.")
                 Metric(value: model.breakdown.rows.count.formatted(), caption: "Items here")
                     .contentTransition(.numericText())
                     .animation(.snappy(duration: 0.22), value: model.breakdown.rows.count)
+                    .help("Folders and files directly inside this one — the tiles on the map and the rows in the list.")
+                // Everything to the left describes the folder in view; what
+                // follows describes the whole volume, so it is set apart.
+                if model.volumeCapacity > 0 || (model.scanRoot?.unreadableCount ?? 0) > 0 {
+                    Divider().frame(height: 26).overlay(Color.hairline)
+                }
                 if model.volumeCapacity > 0 {
                     Metric(value: ByteFormat.string(model.volumeFree), caption: "Free on volume")
+                        .help("Space still available on the whole disk this scan came from — not part of the totals to the left.")
                 }
                 if let unreadable = model.scanRoot?.unreadableCount, unreadable > 0 {
                     Button { model.openFullDiskAccessSettings() } label: {
