@@ -53,6 +53,13 @@ struct ContentView: View {
         .navigationSubtitle(windowSubtitle)
         .preferredColorScheme(.dark)
         .toolbar {
+            ToolbarItem(placement: .navigation) {
+                Button { model.zoomOut() } label: {
+                    Label("Up", systemImage: "arrow.up.left")
+                }
+                .disabled(model.zoomRoot == nil || model.zoomRoot === model.scanRoot)
+                .help("Go to the enclosing folder (⌘↑)")
+            }
             ToolbarItemGroup(placement: .primaryAction) {
                 if model.phase == .ready {
                     Menu {
@@ -249,7 +256,9 @@ private struct HeaderBar: View {
                 }
             }
 
-            Spacer()
+            Spacer(minLength: 12)
+
+            if model.phase == .ready { LegendStrip() }
         }
         .padding(.horizontal, 18)
         .frame(height: 56)
@@ -275,13 +284,6 @@ private struct MapPane: View {
     var body: some View {
         VStack(spacing: 0) {
             HStack(spacing: 6) {
-                Button { model.zoomOut() } label: {
-                    Label("Up", systemImage: "arrow.up.left")
-                }
-                .buttonStyle(GhostButtonStyle())
-                .disabled(model.zoomRoot === model.scanRoot)
-                .help("Go to the enclosing folder (⌘↑)")
-
                 ScrollView(.horizontal, showsIndicators: false) {
                     HStack(spacing: 4) {
                         ForEach(Array(model.breadcrumb.enumerated()), id: \.offset) { index, node in
@@ -300,10 +302,9 @@ private struct MapPane: View {
                     }
                 }
                 Spacer(minLength: 8)
-                LegendStrip()
             }
             .padding(.horizontal, 14)
-            .frame(height: 38)
+            .frame(height: 32)
             .background(Color.panel.opacity(0.6))
             .animation(.snappy(duration: 0.2), value: model.zoomRoot?.objectID)
 
