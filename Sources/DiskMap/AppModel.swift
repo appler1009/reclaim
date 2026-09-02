@@ -51,6 +51,8 @@ final class AppModel: ObservableObject {
     @Published var hasFullDiskAccess = false
     /// True while a scan is running, including once its first level is on screen.
     @Published var isScanning = false
+    /// Top-level folders finished, of how many, and the fraction between them.
+    @Published var scanCompletion: (done: Int, total: Int, fraction: Double) = (0, 0, 0)
 
     private var session: ScanSession?
     /// Ticks the partial sizes into the tree while a scan runs.
@@ -248,6 +250,7 @@ final class AppModel: ObservableObject {
                 self.scanRoot = root
                 self.zoomRoot = self.restorePath(from: root)
                 self.isScanning = false
+                self.scanCompletion = (0, 0, 0)
                 self.phase = .ready
                 self.refreshBreakdown()
                 self.treeRevision += 1
@@ -296,6 +299,7 @@ final class AppModel: ObservableObject {
     /// Copies the scanner's running totals onto the partial tree, largest first
     /// so the map keeps its usual ordering as it fills in.
     private func applyBranchTotals(from session: ScanSession) {
+        scanCompletion = session.completion()
         guard isScanning, let root = scanRoot, root === zoomRoot else { return }
         let totals = session.branchTotals()
         guard totals.bytes.count == root.children.count else { return }

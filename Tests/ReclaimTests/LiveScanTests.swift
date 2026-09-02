@@ -129,3 +129,61 @@ extension LiveScanTests {
         }
     }
 }
+
+@Suite("Scan progress")
+struct ScanProgressTests {
+    private func fixture() throws -> Fixture {
+        let fixture = try Fixture()
+        for branch in 0 ..< 5 {
+            for file in 0 ..< 20 {
+                try fixture.file("branch-\(branch)/nested/file-\(file).bin", bytes: 2_000)
+            }
+        }
+        return fixture
+    }
+
+    @Test func progressReachesEveryFolderByTheEnd() throws {
+        let fixture = try fixture()
+        defer { fixture.cleanUp() }
+
+        let session = ScanSession()
+        _ = Scanner.scan(url: fixture.root, options: ScanOptions(), session: session)
+
+        let completion = session.completion()
+        #expect(completion.total == 5, "one branch per top-level folder")
+        #expect(completion.done == completion.total)
+        #expect(completion.fraction == 1.0, "a finished scan must read as finished")
+    }
+
+    @Test func progressOnlyMovesForward() throws {
+        let fixture = try fixture()
+        defer { fixture.cleanUp() }
+
+        let session = ScanSession()
+        var samples: [Double] = []
+        let sampler = Thread {
+            for _ in 0 ..< 500 {
+                samples.append(session.completion().fraction)
+                usleep(200)
+            }
+        }
+        sampler.start()
+        _ = Scanner.scan(url: fixture.root, options: ScanOptions(), session: session)
+        while !sampler.isFinished { usleep(500) }
+
+        #expect(samples == samples.sorted(), "the bar must never go backwards")
+        #expect(samples.allSatisfy { $0 >= 0 && $0 <= 1 })
+    }
+
+    @Test func nothingToScanReportsNoProgressRatherThanDividingByZero() throws {
+        let fixture = try Fixture()
+        defer { fixture.cleanUp() }
+        try fixture.file("only-a-file.bin", bytes: 1_000)
+
+        let session = ScanSession()
+        _ = Scanner.scan(url: fixture.root, options: ScanOptions(), session: session)
+        let completion = session.completion()
+        #expect(completion.total == 0)
+        #expect(completion.fraction == 0)
+    }
+}

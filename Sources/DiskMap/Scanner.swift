@@ -31,6 +31,11 @@ final class ScanSession: @unchecked Sendable {
     /// tiles are the root's children, and these are their sizes so far.
     private var branchBytes: [UInt64] = []
     private var branchFiles: [Int] = []
+    /// How many top-level directories the scan has finished, out of how many.
+    /// Byte counts cannot give a fraction — nothing knows the total until the
+    /// walk is over — but "34 of 76 folders" is both true and steady.
+    private var branchesToComplete = 0
+    private var branchesCompleted = 0
 
     var onProgress: ((ScanProgress) -> Void)?
 
@@ -39,6 +44,22 @@ final class ScanSession: @unchecked Sendable {
         branchBytes = [UInt64](repeating: 0, count: count)
         branchFiles = [Int](repeating: 0, count: count)
         lock.unlock()
+    }
+
+    func setBranchesToComplete(_ count: Int) {
+        lock.lock(); branchesToComplete = count; lock.unlock()
+    }
+
+    func markBranchComplete() {
+        lock.lock(); branchesCompleted += 1; lock.unlock()
+    }
+
+    /// Directories finished, total to finish, and the fraction between them.
+    func completion() -> (done: Int, total: Int, fraction: Double) {
+        lock.lock(); defer { lock.unlock() }
+        guard branchesToComplete > 0 else { return (0, 0, 0) }
+        return (branchesCompleted, branchesToComplete,
+                Double(branchesCompleted) / Double(branchesToComplete))
     }
 
     /// Bytes and file counts per top-level branch, in the order prepared.
@@ -93,10 +114,16 @@ private final class DirectoryQueue: @unchecked Sendable {
     private var stack: [Job] = []
     private var busy = 0
     private var finished = false
+    /// Outstanding jobs per top-level branch, so a branch can be called done.
+    private var pending: [Int: Int] = [:]
+    var onBranchFinished: ((Int) -> Void)?
 
     func push(_ jobs: [Job]) {
         guard !jobs.isEmpty else { return }
         lock.lock()
+        for job in jobs where job.branch >= 0 {
+            pending[job.branch, default: 0] += 1
+        }
         stack.append(contentsOf: jobs)
         lock.broadcast()
         lock.unlock()
@@ -121,14 +148,21 @@ private final class DirectoryQueue: @unchecked Sendable {
         }
     }
 
-    func complete() {
+    func complete(branch: Int = -1) {
         lock.lock()
         busy -= 1
+        var branchFinished = false
+        if branch >= 0, let outstanding = pending[branch] {
+            let left = outstanding - 1
+            pending[branch] = left
+            branchFinished = left == 0
+        }
         if busy == 0 && stack.isEmpty {
             finished = true
             lock.broadcast()
         }
         lock.unlock()
+        if branchFinished { onBranchFinished?(branch) }
     }
 
     func abort() {
@@ -177,19 +211,25 @@ enum Scanner {
         }
 
         let queue = DirectoryQueue()
+        queue.onBranchFinished = { _ in session.markBranchComplete() }
+        session.setBranchesToComplete(topLevel.count)
         queue.push(topLevel)
 
         let group = DispatchGroup()
         for _ in 0 ..< options.workers {
             DispatchQueue.global(qos: .userInitiated).async(group: group) {
                 while let job = queue.take() {
-                    if session.isCancelled { queue.abort(); queue.complete(); return }
+                    if session.isCancelled {
+                        queue.abort()
+                        queue.complete(branch: job.branch)
+                        return
+                    }
                     let subdirectories = read(job: job,
                                               rootDev: st.st_dev,
                                               options: options,
                                               session: session)
                     queue.push(subdirectories)
-                    queue.complete()
+                    queue.complete(branch: job.branch)
                 }
             }
         }

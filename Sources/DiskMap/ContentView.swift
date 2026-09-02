@@ -20,6 +20,7 @@ struct ContentView: View {
             Color.ink.ignoresSafeArea()
             VStack(spacing: 0) {
                 HeaderBar(model: model)
+                ScanProgressBar(model: model)
                 Divider().overlay(Color.hairline)
                 HStack(spacing: 0) {
                     MapPane(model: model, isResizing: draggingSidebarWidth != nil)
@@ -232,7 +233,9 @@ private struct HeaderBar: View {
                     }
                     // No file count here: "files inside" sits right beside it.
                     Overline(text: model.isScanning
-                             ? "Scanning…"
+                             ? (model.scanCompletion.total > 0
+                                ? "Scanning · \(model.scanCompletion.done) of \(model.scanCompletion.total) folders"
+                                : "Scanning…")
                              : (model.zoomRoot === model.scanRoot
                                 ? "Total \(model.measure == .physical ? "on disk" : "size")"
                                 : "This folder"))
@@ -932,5 +935,31 @@ private struct ShareBar: Shape {
         return Path(roundedRect: CGRect(x: rect.minX, y: rect.minY,
                                         width: width, height: rect.height),
                     cornerRadius: 2)
+    }
+}
+
+
+/// A hairline that fills as the scan works through the top-level folders, and
+/// is simply absent the rest of the time — the clearest signal that a scan is
+/// still running, and that it has finished.
+private struct ScanProgressBar: View {
+    @ObservedObject var model: AppModel
+
+    var body: some View {
+        ZStack(alignment: .leading) {
+            if model.isScanning {
+                Rectangle()
+                    .fill(Color.ember.opacity(0.15))
+                GeometryReader { geometry in
+                    Rectangle()
+                        .fill(LinearGradient(colors: [Color.ember.opacity(0.8), Color.ember],
+                                             startPoint: .leading, endPoint: .trailing))
+                        .frame(width: max(2, geometry.size.width * model.scanCompletion.fraction))
+                        .animation(.easeOut(duration: 0.2), value: model.scanCompletion.fraction)
+                }
+            }
+        }
+        .frame(height: model.isScanning ? 2 : 0)
+        .animation(.easeOut(duration: 0.25), value: model.isScanning)
     }
 }
