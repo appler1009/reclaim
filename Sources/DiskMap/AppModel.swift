@@ -51,10 +51,14 @@ final class AppModel: ObservableObject {
     @Published var hasFullDiskAccess = false
     /// True while a scan is running, including once its first level is on screen.
     @Published var isScanning = false
+    /// The previous scan of this target, if one was ever recorded, and how long
+    /// ago it was taken. What makes the app able to say "this grew".
+    @Published private(set) var comparison: Snapshot?
     /// Top-level folders finished, of how many, and the fraction between them.
     @Published var scanCompletion: (done: Int, total: Int, fraction: Double) = (0, 0, 0)
 
     private var session: ScanSession?
+    var snapshotStore = SnapshotStore()
     /// Ticks the partial sizes into the tree while a scan runs.
     private var liveTimer: Timer?
 
@@ -269,6 +273,7 @@ final class AppModel: ObservableObject {
                 self.refreshBreakdown()
                 self.treeRevision += 1
                 self.refreshTrashSize()
+                self.recordHistory(root: root, target: url.path)
                 self.startNavigationStressIfRequested()
                 Log.info("scan finished", [
                     "path": url.path,
@@ -279,6 +284,34 @@ final class AppModel: ObservableObject {
                 ])
             }
         }
+    }
+
+    /// Files this scan into the target's history, and keeps the previous one to
+    /// compare against.
+    private func recordHistory(root: FileItem, target: String) {
+        let store = snapshotStore
+        let measure = self.measure
+        comparison = store.mostRecent(forTarget: target)
+        // Writing history must never hold up the interface.
+        DispatchQueue.global(qos: .utility).async {
+            let snapshot = Snapshot(root: root, target: target, measure: measure)
+            store.record(snapshot)
+            Log.info("snapshot recorded", ["target": target,
+                                           "bytes": "\(snapshot.totalBytes)",
+                                           "entries": "\(snapshot.entries.count)"])
+        }
+    }
+
+    /// How a path has changed since the last scan of this target.
+    func change(forPath path: String, currentBytes: UInt64) -> SizeChange? {
+        guard let comparison, let previous = comparison.bytes(forPath: path) else { return nil }
+        return SizeChange(bytes: Int64(currentBytes) - Int64(previous), since: comparison.takenAt)
+    }
+
+    /// The change for the folder currently in view.
+    var viewedChange: SizeChange? {
+        guard let zoomRoot else { return nil }
+        return change(forPath: zoomRoot.path, currentBytes: zoomRoot.size(measure))
     }
 
     /// Shows the first level of a running scan and starts growing its sizes from

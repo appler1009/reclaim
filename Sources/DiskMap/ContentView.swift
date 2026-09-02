@@ -1,3 +1,4 @@
+import AppKit
 import QuartzCore
 import SwiftUI
 
@@ -240,6 +241,9 @@ private struct HeaderBar: View {
                             Text("· \(Int((Double(model.viewedBytes) / Double(model.scannedBytes) * 100).rounded()))% of scan")
                                 .font(.system(size: 11)).foregroundStyle(.white.opacity(0.45))
                         }
+                        if let change = model.viewedChange, let label = change.label() {
+                            ChangeChip(change: change, label: label)
+                        }
                     }
                     // No file count here: "files inside" sits right beside it.
                     Overline(text: model.isScanning
@@ -406,6 +410,7 @@ private struct BreakdownPane: View {
                         BreakdownRowView(
                             row: row,
                             measure: model.measure,
+                            change: model.change(forPath: row.node.path, currentBytes: row.bytes),
                             isStaged: model.isStaged(row.node),
                             isSelected: model.selectedItem === row.node,
                             onToggleStaged: { model.toggleStaged(row.node) },
@@ -457,6 +462,8 @@ private struct BreakdownPane: View {
 private struct BreakdownRowView: View, Equatable {
     let row: BreakdownRow
     let measure: SizeMeasure
+    /// Growth since the previous scan, when there is one worth showing.
+    let change: SizeChange?
     let isStaged: Bool
     let isSelected: Bool
     let onToggleStaged: () -> Void
@@ -470,6 +477,7 @@ private struct BreakdownRowView: View, Equatable {
         lhs.row.id == rhs.row.id
             && lhs.row.bytes == rhs.row.bytes
             && lhs.measure == rhs.measure
+            && lhs.change?.bytes == rhs.change?.bytes
             && lhs.isStaged == rhs.isStaged
             && lhs.isSelected == rhs.isSelected
     }
@@ -501,6 +509,9 @@ private struct BreakdownRowView: View, Equatable {
                 .frame(height: 3)
             }
 
+            if let change, let label = change.label(minimum: 4 * 1024 * 1024) {
+                ChangeChip(change: change, label: label)
+            }
             Text(ByteFormat.string(row.bytes))
                 .font(.system(size: 11)).monospacedDigit()
                 .foregroundStyle(.white.opacity(0.75))
@@ -975,5 +986,26 @@ private struct ScanProgressBar: View {
         }
         .frame(height: model.isScanning ? 2 : 0)
         .animation(.easeOut(duration: 0.25), value: model.isScanning)
+    }
+}
+
+
+/// How much something has grown or shrunk since the last scan of this target.
+private struct ChangeChip: View {
+    let change: SizeChange
+    let label: String
+
+    var body: some View {
+        Text(label)
+            .font(.system(size: 10, weight: .semibold))
+            .monospacedDigit()
+            .padding(.horizontal, 5)
+            .padding(.vertical, 2)
+            .background(
+                Capsule().fill((change.isGrowth ? Color.ember : Color.green).opacity(0.16))
+            )
+            .foregroundStyle((change.isGrowth ? Color.ember : Color.green).opacity(0.95))
+            .help("\(change.isGrowth ? "Grown" : "Shrunk") by \(ByteFormat.string(change.magnitude)) "
+                  + "since the scan on \(change.since.formatted(date: .abbreviated, time: .shortened))")
     }
 }

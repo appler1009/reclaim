@@ -21,8 +21,11 @@ struct WindowTabTitle: NSViewRepresentable {
         let title = self.title
         // The view has no window on the first update pass.
         DispatchQueue.main.async {
-            guard let window = view.window, window.tab.title != title else { return }
-            Log.debug("tab renamed", ["from": window.tab.title, "to": title])
+            guard let window = view.window else { return }
+            // Only for a window already in a tab group. Reaching for `window.tab`
+            // on an untabbed window makes AppKit materialise one, and that showed
+            // up as a phantom second window at every launch.
+            guard window.tabGroup != nil, window.tab.title != title else { return }
             window.tab.title = title
         }
     }
