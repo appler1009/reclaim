@@ -18,7 +18,10 @@ enum SidebarWidth {
 
 /// The hairline between the panes, with a wider invisible grab area.
 struct PaneDivider: View {
-    @Binding var width: Double
+    let width: Double
+    let onChange: (Double) -> Void
+    let onEnd: () -> Void
+
     @State private var widthAtDragStart: Double?
     @State private var hovering = false
 
@@ -43,9 +46,12 @@ struct PaneDivider: View {
                                 let start = widthAtDragStart ?? width
                                 if widthAtDragStart == nil { widthAtDragStart = start }
                                 // The sidebar is on the right: dragging left widens it.
-                                width = SidebarWidth.clamped(start - value.translation.width)
+                                onChange(SidebarWidth.clamped(start - value.translation.width))
                             }
-                            .onEnded { _ in widthAtDragStart = nil }
+                            .onEnded { _ in
+                                widthAtDragStart = nil
+                                onEnd()
+                            }
                     )
             )
             .accessibilityLabel("Resize sidebar")

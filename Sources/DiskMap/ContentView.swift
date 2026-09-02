@@ -1,3 +1,4 @@
+import QuartzCore
 import SwiftUI
 
 struct ContentView: View {
@@ -5,7 +6,15 @@ struct ContentView: View {
     @State private var confirming = false
     @State private var report: AppModel.DeleteReport?
     @State private var working = false
-    @AppStorage(SidebarWidth.storageKey) private var sidebarWidth = SidebarWidth.default
+    @AppStorage(SidebarWidth.storageKey) private var storedSidebarWidth = SidebarWidth.default
+    /// Live width while dragging. Writing straight to @AppStorage on every drag
+    /// event round-tripped through UserDefaults and re-evaluated the whole view
+    /// on each mouse move, which is what made the map stutter.
+    @State private var draggingSidebarWidth: Double?
+
+    private var sidebarWidth: Double {
+        SidebarWidth.clamped(draggingSidebarWidth ?? storedSidebarWidth)
+    }
 
     var body: some View {
         ZStack {
@@ -14,12 +23,18 @@ struct ContentView: View {
                 HeaderBar(model: model)
                 Divider().overlay(Color.hairline)
                 HStack(spacing: 0) {
-                    MapPane(model: model)
-                    PaneDivider(width: $sidebarWidth)
+                    MapPane(model: model, isResizing: draggingSidebarWidth != nil)
+                    PaneDivider(
+                        width: sidebarWidth,
+                        onChange: { draggingSidebarWidth = $0 },
+                        onEnd: {
+                            storedSidebarWidth = sidebarWidth
+                            draggingSidebarWidth = nil
+                        })
                     BreakdownPane(model: model,
                                   working: working,
                                   onTrash: { confirming = true })
-                        .frame(width: SidebarWidth.clamped(sidebarWidth))
+                        .frame(width: sidebarWidth)
                 }
             }
             if model.phase != .ready { Overlay(model: model) }
@@ -27,7 +42,10 @@ struct ContentView: View {
         // An ideal size matters as much as the minimum: the content is greedy in
         // both axes, and without one SwiftUI grows the window to fill the display.
         .frame(minWidth: 1080, idealWidth: 1320, minHeight: 680, idealHeight: 860)
-        .onAppear { model.scanLaunchArgumentIfPresent() }
+        .onAppear {
+            model.scanLaunchArgumentIfPresent()
+            startResizeStressIfRequested()
+        }
         .preferredColorScheme(.dark)
         .toolbar {
             ToolbarItemGroup(placement: .primaryAction) {
@@ -93,6 +111,40 @@ struct ContentView: View {
         let more = items.count > 6 ? "\n· and \(items.count - 6) more…" : ""
         return "This frees \(ByteFormat.string(model.stagedBytes)) once the Trash is emptied. "
              + "Nothing is deleted permanently.\n\n" + preview + more
+    }
+
+    /// `--stress-resize` sweeps the divider through the same state path a real
+    /// drag uses, and times the resulting update, so resizing can be measured
+    /// rather than eyeballed.
+    private func startResizeStressIfRequested() {
+        guard CommandLine.arguments.contains("--stress-resize") else { return }
+        var tick = 0
+        var costs: [Double] = []
+        let timer = Timer(timeInterval: 1.0 / 60.0, repeats: true) { timer in
+            MainActor.assumeIsolated {
+                tick += 1
+                let sweep = sin(Double(tick) / 18.0)          // back and forth
+                let started = DispatchTime.now().uptimeNanoseconds
+                draggingSidebarWidth = 520 + sweep * 200
+                CATransaction.flush()
+                NSApp.windows.first(where: { $0.isVisible })?.contentView?.displayIfNeeded()
+                costs.append(Double(DispatchTime.now().uptimeNanoseconds - started) / 1e6)
+
+                if tick >= 240 {
+                    timer.invalidate()
+                    draggingSidebarWidth = nil
+                    let sorted = costs.sorted()
+                    Log.info("resize stress finished", [
+                        "updates": "\(sorted.count)",
+                        "medianMs": String(format: "%.2f", sorted[sorted.count / 2]),
+                        "p95Ms": String(format: "%.2f", sorted[Int(Double(sorted.count - 1) * 0.95)]),
+                        "maxMs": String(format: "%.2f", sorted.last ?? 0),
+                        "over16ms": "\(sorted.filter { $0 > 16 }.count)",
+                    ])
+                }
+            }
+        }
+        RunLoop.main.add(timer, forMode: .common)
     }
 
     private func performTrash() {
@@ -191,6 +243,7 @@ private struct HeaderBar: View {
 
 private struct MapPane: View {
     @ObservedObject var model: AppModel
+    var isResizing = false
 
     var body: some View {
         VStack(spacing: 0) {
@@ -227,7 +280,7 @@ private struct MapPane: View {
             .background(Color.panel.opacity(0.6))
             .animation(.snappy(duration: 0.2), value: model.zoomRoot?.objectID)
 
-            TreemapRepresentable(model: model)
+            TreemapRepresentable(model: model, isResizing: isResizing)
                 .background(Color.ink)
                 .clipped()
 

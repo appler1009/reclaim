@@ -2,6 +2,8 @@ import SwiftUI
 
 struct TreemapRepresentable: NSViewRepresentable {
     @ObservedObject var model: AppModel
+    /// True while the sidebar divider is being dragged.
+    var isResizing = false
 
     func makeNSView(context: Context) -> TreemapView {
         let view = TreemapView()
@@ -13,6 +15,7 @@ struct TreemapRepresentable: NSViewRepresentable {
         context.coordinator.model = model
         if view.root !== model.zoomRoot { view.show(root: model.zoomRoot) }
         if view.measure != model.measure { view.measure = model.measure }
+        if view.isResizing != isResizing { view.isResizing = isResizing }
         let staged = model.stagedMarks
         if view.stagedMarks != staged { view.stagedMarks = staged }
         if view.selectedItemIdentity !== model.selectedItem { view.select(model.selectedItem) }

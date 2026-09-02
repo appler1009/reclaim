@@ -35,6 +35,26 @@ final class TreemapView: NSView {
     private var scrollCooldownEnds = Date.distantPast
 
     var measure: SizeMeasure = .physical { didSet { rebuild() } }
+
+    /// Set while the sidebar divider is being dragged.
+    ///
+    /// A divider drag resizes this view continuously exactly like a window
+    /// resize, but AppKit's `inLiveResize` only covers the window, so the map
+    /// had no idea it was happening: it kept drawing labels and a hover
+    /// highlight belonging to a layout that no longer existed.
+    var isResizing = false {
+        didSet {
+            guard isResizing != oldValue else { return }
+            if isResizing, hovered != nil {
+                hovered = nil
+                delegate?.treemap(self, didHover: nil)
+            }
+            needsDisplay = true
+        }
+    }
+
+    /// True whenever the view is being resized, by the window or the divider.
+    private var isLiveResizing: Bool { inLiveResize || isResizing }
     /// Nodes the user has picked for the Trash.
     var stagedMarks: Set<ObjectIdentifier> = [] {
         didSet { expandedStaged = nil; needsDisplay = true }
@@ -148,7 +168,7 @@ final class TreemapView: NSView {
 
         // Lay out inline when that is fast enough, so the map on screen always
         // matches the current size instead of lagging a frame behind.
-        if inLiveResize || lastLayoutDuration < 0.020 {
+        if isLiveResizing || lastLayoutDuration < 0.020 {
             let started = DispatchTime.now().uptimeNanoseconds
             layout = TreemapLayout.build(root: root, in: box, measure: measure,
                                          minimumArea: minimumArea, maximumDepth: 1)
@@ -179,6 +199,7 @@ final class TreemapView: NSView {
     /// resizing the sidebar, for one — the highlight would be drawn at the tile's
     /// old rectangle. Re-resolve it against the cells that now exist.
     private func refreshHoverForNewLayout() {
+        guard !isResizing else { hovered = nil; return }
         guard hovered != nil || transition != nil else { return }
         guard let window, window.isKeyWindow else { hovered = nil; return }
         let point = convert(window.mouseLocationOutsideOfEventStream, from: nil)
@@ -220,8 +241,8 @@ final class TreemapView: NSView {
         TreemapRenderer.draw(layout: layout, in: context, dirty: dirtyRect,
                              measure: measure, staged: stagedNodes)
         // Labels are the expensive part of a redraw and unreadable mid-drag.
-        if !inLiveResize { drawLabels(in: dirtyRect) }
-        drawChrome()
+        if !isLiveResizing { drawLabels(in: dirtyRect) }
+        if !isResizing { drawChrome() }
     }
 
     /// Staged nodes expanded to include everything inside them, so a selected
@@ -357,6 +378,7 @@ final class TreemapView: NSView {
     }
 
     override func mouseMoved(with event: NSEvent) {
+        guard !isResizing else { return }
         let point = convert(event.locationInWindow, from: nil)
         let cell = layout.item(at: point)
         guard cell?.item !== hovered?.item else { return }
