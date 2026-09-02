@@ -531,7 +531,7 @@ private struct BreakdownRowView: View, Equatable {
         .onHover { hovering = $0 }
         .onTapGesture(perform: onShow)
         .contextMenu {
-            if row.isDirectory { Button("Open in map", action: onOpen) }
+            if row.isDirectory { Button("Open in Map", action: onOpen) }
             Button("Reveal in Finder", action: onReveal)
             Button(isStaged ? "Remove from selection" : "Select for Trash", action: onToggleStaged)
         }
@@ -678,11 +678,11 @@ private struct Overlay: View {
 
                         HStack(spacing: 10) {
                             Button { model.scan(FileManager.default.homeDirectoryForCurrentUser) } label: {
-                                Label("Scan Home folder", systemImage: "house.fill")
+                                Label("Scan Home Folder", systemImage: "house.fill")
                             }
                             .buttonStyle(GhostButtonStyle())
                             Button { model.chooseFolder() } label: {
-                                Label("Choose a folder…", systemImage: "folder")
+                                Label("Choose Folder…", systemImage: "folder")
                             }
                             .buttonStyle(GhostButtonStyle())
                         }
@@ -711,7 +711,7 @@ private struct Overlay: View {
                     Image(systemName: "exclamationmark.triangle.fill")
                         .font(.system(size: 30)).foregroundStyle(.orange)
                     Text(message).font(.system(size: 13)).foregroundStyle(.white.opacity(0.8))
-                    Button("Choose another folder…") { model.chooseFolder() }
+                    Button("Choose Another Folder…") { model.chooseFolder() }
                         .buttonStyle(GhostButtonStyle())
                 }
             case .ready:
@@ -738,8 +738,8 @@ struct ScanMenu: View {
                 }
             }
             Divider()
-            Button("Home folder") { model.scan(FileManager.default.homeDirectoryForCurrentUser) }
-            Button("Choose a folder…") { model.chooseFolder() }
+            Button("Home Folder") { model.scan(FileManager.default.homeDirectoryForCurrentUser) }
+            Button("Choose Folder…") { model.chooseFolder() }
             Divider()
             Button("Refresh volumes") { model.refreshVolumes() }
         } label: {
