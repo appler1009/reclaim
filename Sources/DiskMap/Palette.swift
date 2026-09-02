@@ -46,21 +46,6 @@ enum FileFamily: String, CaseIterable {
     var label: String { rawValue.capitalized }
 }
 
-extension WasteCategory {
-    var accent: NSColor {
-        switch self {
-        case .buildArtifacts:   return NSColor(srgbRed: 1.00, green: 0.42, blue: 0.36, alpha: 1)
-        case .developerCaches:  return NSColor(srgbRed: 1.00, green: 0.58, blue: 0.25, alpha: 1)
-        case .appCaches:        return NSColor(srgbRed: 1.00, green: 0.78, blue: 0.28, alpha: 1)
-        case .trash:            return NSColor(srgbRed: 0.98, green: 0.35, blue: 0.62, alpha: 1)
-        case .installers:       return NSColor(srgbRed: 0.72, green: 0.52, blue: 1.00, alpha: 1)
-        case .staleDownloads:   return NSColor(srgbRed: 0.40, green: 0.72, blue: 1.00, alpha: 1)
-        case .logs:             return NSColor(srgbRed: 0.55, green: 0.60, blue: 0.72, alpha: 1)
-        case .bigAndOld:        return NSColor(srgbRed: 0.30, green: 0.88, blue: 0.78, alpha: 1)
-        }
-    }
-}
-
 enum Theme {
     static let background = NSColor(srgbRed: 0.055, green: 0.063, blue: 0.086, alpha: 1)
     static let panel = NSColor(srgbRed: 0.086, green: 0.098, blue: 0.129, alpha: 1)

@@ -242,6 +242,9 @@ enum Scanner {
                 node.physicalSize = physical
                 node.fileCount = files
                 node.unreadableCount = unreadable
+                // Sorted once here so the treemap layout never has to sort:
+                // it runs on every resize frame, this runs once per scan.
+                node.children.sort { $0.physicalSize > $1.physicalSize }
             } else {
                 stack.append((node, true))
                 for child in node.children { stack.append((child, false)) }

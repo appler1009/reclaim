@@ -5,6 +5,7 @@ extension Color {
     static let panel = Color(nsColor: Theme.panel)
     static let hairline = Color(nsColor: Theme.hairline)
     static let ember = Color(nsColor: Theme.accent)
+    static let caution = Color(.sRGB, red: 1.00, green: 0.78, blue: 0.28, opacity: 1)
 }
 
 /// Small caps section label.

@@ -13,11 +13,6 @@ struct TreemapRepresentable: NSViewRepresentable {
         context.coordinator.model = model
         if view.root !== model.zoomRoot { view.show(root: model.zoomRoot) }
         if view.measure != model.measure { view.measure = model.measure }
-        if view.focusWaste != model.focusWaste { view.focusWaste = model.focusWaste }
-        if context.coordinator.appliedWasteRevision != model.wasteRevision {
-            context.coordinator.appliedWasteRevision = model.wasteRevision
-            view.wasteMarks = model.wasteMarks
-        }
         let staged = model.stagedMarks
         if view.stagedMarks != staged { view.stagedMarks = staged }
         if view.selectedItemIdentity !== model.selectedItem { view.select(model.selectedItem) }
@@ -28,7 +23,6 @@ struct TreemapRepresentable: NSViewRepresentable {
     @MainActor
     final class Coordinator: TreemapViewDelegate {
         var model: AppModel
-        var appliedWasteRevision = -1
         init(model: AppModel) { self.model = model }
 
         nonisolated func treemap(_ view: TreemapView, didHover cell: TreemapCell?) {
@@ -39,6 +33,9 @@ struct TreemapRepresentable: NSViewRepresentable {
         }
         nonisolated func treemap(_ view: TreemapView, didActivate item: FileItem) {
             MainActor.assumeIsolated { model.zoom(into: item) }
+        }
+        nonisolated func treemapDidRequestUp(_ view: TreemapView) {
+            MainActor.assumeIsolated { model.zoomOut() }
         }
     }
 }

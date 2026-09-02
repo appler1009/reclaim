@@ -76,6 +76,7 @@ final class FileItem {
     /// Removes `child`, subtracting its size from every ancestor.
     func remove(child: FileItem) {
         guard let index = children.firstIndex(where: { $0 === child }) else { return }
+        invalidateDominantFamily()
         children.remove(at: index)
         child.parent = nil
         var node: FileItem? = self
@@ -83,6 +84,44 @@ final class FileItem {
             current.logicalSize -= min(current.logicalSize, child.logicalSize)
             current.physicalSize -= min(current.physicalSize, child.physicalSize)
             current.fileCount -= child.fileCount
+            node = current.parent
+        }
+    }
+
+    /// Stable identity for SwiftUI lists (the tree is made of reference types).
+    var objectID: ObjectIdentifier { ObjectIdentifier(self) }
+
+    private var dominantFamilyCache: FileFamily?
+
+    /// The kind of file this folder mostly holds, by bytes — the map colours a
+    /// folder tile by its contents rather than painting every folder the same
+    /// grey. Walked once per folder and cached; the map redraws constantly.
+    func dominantFamily(_ measure: SizeMeasure) -> FileFamily {
+        if let dominantFamilyCache { return dominantFamilyCache }
+        guard isDirectory else {
+            let family = FileFamily.of(self)
+            dominantFamilyCache = family
+            return family
+        }
+        var bytesByFamily: [FileFamily: UInt64] = [:]
+        var stack: [FileItem] = [self]
+        while let current = stack.popLast() {
+            if current.isDirectory {
+                stack.append(contentsOf: current.children)
+            } else {
+                let size = current.size(measure)
+                if size > 0 { bytesByFamily[FileFamily.of(current), default: 0] += size }
+            }
+        }
+        let family = bytesByFamily.max { $0.value < $1.value }?.key ?? .other
+        dominantFamilyCache = family
+        return family
+    }
+
+    private func invalidateDominantFamily() {
+        var node: FileItem? = self
+        while let current = node {
+            current.dominantFamilyCache = nil
             node = current.parent
         }
     }

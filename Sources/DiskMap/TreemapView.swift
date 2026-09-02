@@ -4,29 +4,41 @@ protocol TreemapViewDelegate: AnyObject {
     func treemap(_ view: TreemapView, didHover cell: TreemapCell?)
     func treemap(_ view: TreemapView, didSelect cell: TreemapCell?)
     func treemap(_ view: TreemapView, didActivate item: FileItem)
+    func treemapDidRequestUp(_ view: TreemapView)
 }
 
-/// Renders a squarified treemap of the scanned tree and handles hit-testing.
-/// The map itself is expensive to draw, so it is cached in an image and only
-/// hover/selection chrome is redrawn while the pointer moves.
+/// Renders a squarified treemap of the folder currently in view.
+///
+/// Only one level is drawn: every immediate child is a single tile, whatever is
+/// inside it. Drilling into a folder re-lays the map for that folder. That keeps
+/// the picture readable (dozens of tiles, all labelled) instead of a mosaic of
+/// sub-pixel specks, and makes a full relayout essentially free.
+///
+/// The map is drawn live from the layout on every pass — never blitted from a
+/// cached bitmap — so it is always sharp and always laid out for the size it is
+/// actually being displayed at, including mid-resize. Hover and selection only
+/// invalidate the rectangles that changed, so pointer movement stays cheap.
 final class TreemapView: NSView {
     weak var delegate: TreemapViewDelegate?
 
     private(set) var root: FileItem?
     private var layout = TreemapLayout()
-    private var cache: NSImage?
     private var generation = 0
+    /// How long the last layout took, used to decide whether it can be done inline.
+    private var lastLayoutDuration: TimeInterval = 0
     private var hovered: TreemapCell?
     private var selected: FileItem?
     private var trackingArea: NSTrackingArea?
+    private var scrollAccumulator: CGFloat = 0
+    private var scrollCooldownEnds = Date.distantPast
 
     var measure: SizeMeasure = .physical { didSet { rebuild() } }
-    /// Nodes marked for reclamation, with the category that flagged them.
-    var wasteMarks: [ObjectIdentifier: WasteCategory] = [:] { didSet { redrawMap() } }
-    /// Nodes the user has ticked for deletion.
-    var stagedMarks: Set<ObjectIdentifier> = [] { didSet { redrawMap() } }
-    /// Dim everything that is not reclaimable.
-    var focusWaste = true { didSet { redrawMap() } }
+    /// Nodes the user has picked for the Trash.
+    var stagedMarks: Set<ObjectIdentifier> = [] {
+        didSet { expandedStaged = nil; needsDisplay = true }
+    }
+    /// Cache of `stagedMarks` expanded over the current layout's cells.
+    private var expandedStaged: Set<ObjectIdentifier>?
 
     override var isFlipped: Bool { true }
     override var acceptsFirstResponder: Bool { true }
@@ -53,125 +65,125 @@ final class TreemapView: NSView {
         rebuild()
     }
 
+    override func viewDidEndLiveResize() {
+        super.viewDidEndLiveResize()
+        rebuild()   // back to full detail
+    }
+
     private func rebuild() {
         guard let root, bounds.width > 4, bounds.height > 4 else {
-            layout = TreemapLayout(); cache = nil; needsDisplay = true; return
+            layout = TreemapLayout()
+            needsDisplay = true
+            return
         }
         generation += 1
         let token = generation
         let box = bounds
         let measure = self.measure
+        let minimumArea: CGFloat = 16
+
+        // Lay out inline when that is fast enough, so the map on screen always
+        // matches the current size instead of lagging a frame behind.
+        if inLiveResize || lastLayoutDuration < 0.020 {
+            let started = DispatchTime.now().uptimeNanoseconds
+            layout = TreemapLayout.build(root: root, in: box, measure: measure,
+                                         minimumArea: minimumArea, maximumDepth: 1)
+            expandedStaged = nil
+            lastLayoutDuration = Double(DispatchTime.now().uptimeNanoseconds - started) / 1e9
+            needsDisplay = true
+            return
+        }
+
         DispatchQueue.global(qos: .userInitiated).async { [weak self] in
-            let computed = TreemapLayout.build(root: root, in: box, measure: measure)
+            let started = DispatchTime.now().uptimeNanoseconds
+            let computed = TreemapLayout.build(root: root, in: box, measure: measure,
+                                               minimumArea: minimumArea, maximumDepth: 1)
+            let elapsed = Double(DispatchTime.now().uptimeNanoseconds - started) / 1e9
             DispatchQueue.main.async {
                 guard let self, self.generation == token else { return }
                 self.layout = computed
-                self.redrawMap()
+                self.expandedStaged = nil
+                self.lastLayoutDuration = elapsed
+                self.needsDisplay = true
             }
         }
-    }
-
-    private func redrawMap() {
-        guard bounds.width > 4, bounds.height > 4 else { return }
-        let image = NSImage(size: bounds.size)
-        image.lockFocusFlipped(true)
-        drawMap()
-        image.unlockFocus()
-        cache = image
-        needsDisplay = true
     }
 
     // MARK: - Drawing
 
     override func draw(_ dirtyRect: NSRect) {
-        Theme.background.setFill()
-        dirtyRect.fill()
-        cache?.draw(in: bounds, from: .zero, operation: .sourceOver, fraction: 1)
+        guard let context = NSGraphicsContext.current?.cgContext else { return }
+        TreemapRenderer.draw(layout: layout, in: context, dirty: dirtyRect,
+                             measure: measure, staged: stagedNodes)
+        // Labels are the expensive part of a redraw and unreadable mid-drag.
+        if !inLiveResize { drawLabels(in: dirtyRect) }
         drawChrome()
     }
 
-    private func drawMap() {
-        guard let context = NSGraphicsContext.current?.cgContext else { return }
-        context.setFillColor(Theme.background.cgColor)
-        context.fill(bounds)
-
-        for cell in layout.cells {
-            let rect = cell.rect
-            guard rect.width > 0.4, rect.height > 0.4 else { continue }
-            let waste = wasteCategory(for: cell.item)
-            let staged = isStaged(cell.item)
-
-            var color: NSColor
-            if let waste {
-                color = waste.accent
-            } else {
-                color = FileFamily.of(cell.item).color
-                if focusWaste { color = color.blended(withFraction: 0.74, of: Theme.background) ?? color }
-            }
-            // Depth shading keeps nested folders legible.
-            let shade = min(CGFloat(cell.depth) * 0.045, 0.30)
-            color = color.blended(withFraction: shade, of: .black) ?? color
-            if staged { color = color.blended(withFraction: 0.35, of: .white) ?? color }
-
-            context.setFillColor(color.cgColor)
-            context.fill(rect)
-
-            // Cheap bevel: a bright top-left edge and a dark bottom-right edge.
-            if rect.width > 3 && rect.height > 3 {
-                context.setFillColor(NSColor(white: 1, alpha: waste != nil ? 0.22 : 0.10).cgColor)
-                context.fill(CGRect(x: rect.minX, y: rect.minY, width: rect.width, height: 1))
-                context.fill(CGRect(x: rect.minX, y: rect.minY, width: 1, height: rect.height))
-                context.setFillColor(NSColor(white: 0, alpha: 0.28).cgColor)
-                context.fill(CGRect(x: rect.minX, y: rect.maxY - 1, width: rect.width, height: 1))
-                context.fill(CGRect(x: rect.maxX - 1, y: rect.minY, width: 1, height: rect.height))
-            }
-            if staged && rect.width > 8 && rect.height > 8 {
-                context.setStrokeColor(NSColor.white.withAlphaComponent(0.9).cgColor)
-                context.setLineWidth(1.5)
-                context.stroke(rect.insetBy(dx: 1, dy: 1))
-            }
+    /// Staged nodes expanded to include everything inside them, so a selected
+    /// folder highlights its whole subtree without a per-cell parent walk.
+    private var stagedNodes: Set<ObjectIdentifier> {
+        guard !stagedMarks.isEmpty else { return [] }
+        if let cached = expandedStaged { return cached }
+        var expanded = Set<ObjectIdentifier>()
+        for cell in layout.cells where isStaged(cell.item) {
+            expanded.insert(ObjectIdentifier(cell.item))
         }
-
-        // Folder outlines, brightest at the shallowest levels.
-        for frame in layout.folderFrames where frame.rect.width > 10 && frame.rect.height > 10 {
-            let alpha = max(0.04, 0.30 - CGFloat(frame.depth) * 0.06)
-            context.setStrokeColor(NSColor(white: 0, alpha: alpha).cgColor)
-            context.setLineWidth(1)
-            context.stroke(frame.rect.insetBy(dx: 0.5, dy: 0.5))
-        }
-
-        drawLabels()
+        expandedStaged = expanded
+        return expanded
     }
 
-    private func drawLabels() {
-        for cell in layout.cells where cell.rect.width > 74 && cell.rect.height > 22 {
-            let waste = wasteCategory(for: cell.item)
-            let strong = waste != nil || !focusWaste
-            let title = NSMutableParagraphStyle()
-            title.lineBreakMode = .byTruncatingMiddle
+    private func drawLabels(in dirtyRect: NSRect) {
+        for cell in layout.cells
+        where cell.rect.width > 52 && cell.rect.height > 18 && cell.rect.intersects(dirtyRect) {
+            let paragraph = NSMutableParagraphStyle()
+            paragraph.lineBreakMode = .byTruncatingMiddle
+            // Bright tiles get dark text, so a label never washes out.
+            let tint = TreemapRenderer.tileColor(family: cell.item.dominantFamily(measure),
+                                                 depth: cell.depth,
+                                                 staged: stagedNodes.contains(ObjectIdentifier(cell.item)))
+            let light = TreemapRenderer.isLight(tint)
+            let ink: NSColor = light ? .black : .white
+            // A nil value must be left out of the attributes entirely: passing
+            // `Optional.none as Any` for .shadow makes AppKit throw mid-draw.
+            let shadow: [NSAttributedString.Key: Any] = light ? [:] : [.shadow: labelShadow]
             let nameAttributes: [NSAttributedString.Key: Any] = [
                 .font: NSFont.systemFont(ofSize: 11, weight: .semibold),
-                .foregroundColor: NSColor.white.withAlphaComponent(strong ? 0.95 : 0.45),
-                .paragraphStyle: title,
-                .shadow: labelShadow,
-            ]
+                .foregroundColor: ink.withAlphaComponent(light ? 0.82 : 0.95),
+                .paragraphStyle: paragraph,
+            ].merging(shadow) { current, _ in current }
             let inset = cell.rect.insetBy(dx: 5, dy: 4)
             (cell.item.name as NSString).draw(
                 with: CGRect(x: inset.minX, y: inset.minY, width: inset.width, height: 14),
                 options: [.truncatesLastVisibleLine], attributes: nameAttributes)
 
-            if cell.rect.height > 40 && cell.rect.width > 110 {
-                let detail = ByteFormat.string(cell.item.size(measure))
-                    + (waste != nil ? "  ·  reclaimable" : "")
+            if cell.rect.height > 34 && cell.rect.width > 84 {
                 let detailAttributes: [NSAttributedString.Key: Any] = [
                     .font: NSFont.monospacedDigitSystemFont(ofSize: 10, weight: .regular),
-                    .foregroundColor: NSColor.white.withAlphaComponent(strong ? 0.72 : 0.32),
-                    .paragraphStyle: title,
-                    .shadow: labelShadow,
-                ]
+                    .foregroundColor: ink.withAlphaComponent(light ? 0.66 : 0.72),
+                    .paragraphStyle: paragraph,
+                ].merging(shadow) { current, _ in current }
+                var detail = ByteFormat.string(cell.item.size(measure))
+                if let total = root?.size(measure), total > 0 {
+                    let share = Double(cell.item.size(measure)) / Double(total) * 100
+                    detail += String(format: "  ·  %.0f%%", share)
+                }
                 (detail as NSString).draw(
                     with: CGRect(x: inset.minX, y: inset.minY + 15, width: inset.width, height: 13),
                     options: [.truncatesLastVisibleLine], attributes: detailAttributes)
+
+                // A folder tile stands for everything inside it; say how much.
+                if cell.item.isDirectory, cell.rect.height > 52, cell.rect.width > 110 {
+                    let countAttributes: [NSAttributedString.Key: Any] = [
+                        .font: NSFont.systemFont(ofSize: 9.5),
+                        .foregroundColor: ink.withAlphaComponent(light ? 0.5 : 0.45),
+                        .paragraphStyle: paragraph,
+                    ].merging(shadow) { current, _ in current }
+                    let files = cell.item.fileCount
+                    ("\(files.formatted()) file\(files == 1 ? "" : "s")" as NSString).draw(
+                        with: CGRect(x: inset.minX, y: inset.minY + 29, width: inset.width, height: 12),
+                        options: [.truncatesLastVisibleLine], attributes: countAttributes)
+                }
             }
         }
     }
@@ -206,18 +218,10 @@ final class TreemapView: NSView {
         return union
     }
 
-    // MARK: - Waste lookup
-
-    private func wasteCategory(for item: FileItem) -> WasteCategory? {
-        var node: FileItem? = item
-        while let current = node {
-            if let category = wasteMarks[ObjectIdentifier(current)] { return category }
-            node = current.parent
-        }
-        return nil
-    }
+    // MARK: - Selection lookup
 
     private func isStaged(_ item: FileItem) -> Bool {
+        guard !stagedMarks.isEmpty else { return false }
         var node: FileItem? = item
         while let current = node {
             if stagedMarks.contains(ObjectIdentifier(current)) { return true }
@@ -241,17 +245,45 @@ final class TreemapView: NSView {
     override func mouseMoved(with event: NSEvent) {
         let point = convert(event.locationInWindow, from: nil)
         let cell = layout.item(at: point)
-        if cell?.item !== hovered?.item {
-            hovered = cell
-            delegate?.treemap(self, didHover: cell)
-            needsDisplay = true
-        }
+        guard cell?.item !== hovered?.item else { return }
+        let previous = hovered?.rect
+        hovered = cell
+        delegate?.treemap(self, didHover: cell)
+        // Only the outgoing and incoming outlines changed.
+        if let previous { setNeedsDisplay(previous.insetBy(dx: -2, dy: -2)) }
+        if let rect = cell?.rect { setNeedsDisplay(rect.insetBy(dx: -2, dy: -2)) }
     }
 
     override func mouseExited(with event: NSEvent) {
+        let previous = hovered?.rect
         hovered = nil
         delegate?.treemap(self, didHover: nil)
-        needsDisplay = true
+        if let previous { setNeedsDisplay(previous.insetBy(dx: -2, dy: -2)) }
+    }
+
+    /// Scrolling navigates the hierarchy: up into the folder under the pointer,
+    /// down back out of it — the same gesture people use to zoom a map.
+    override func scrollWheel(with event: NSEvent) {
+        guard event.deltaY != 0 || event.scrollingDeltaY != 0 else { return }
+        let delta = event.hasPreciseScrollingDeltas ? event.scrollingDeltaY / 8 : event.deltaY
+        scrollAccumulator += delta
+
+        // One step per gesture burst, or a flick crosses several levels at once.
+        guard abs(scrollAccumulator) >= 2.5, Date() >= scrollCooldownEnds else { return }
+        let goingIn = scrollAccumulator > 0
+        scrollAccumulator = 0
+        scrollCooldownEnds = Date().addingTimeInterval(0.28)
+
+        if goingIn {
+            let point = convert(event.locationInWindow, from: nil)
+            guard let cell = layout.item(at: point), cell.item.isDirectory,
+                  !cell.item.children.isEmpty else { return }
+            hovered = nil
+            delegate?.treemap(self, didActivate: cell.item)
+        } else {
+            hovered = nil
+            delegate?.treemapDidRequestUp(self)
+        }
     }
 
     override func mouseDown(with event: NSEvent) {

@@ -2,9 +2,12 @@ import CoreGraphics
 import Foundation
 
 struct TreemapCell {
-    let item: FileItem
+    /// Not retained: the layout never outlives the tree it describes, and
+    /// retain/release on ~100k cells was the single biggest cost in the
+    /// profile of a full-detail layout.
+    unowned(unsafe) let item: FileItem
     let rect: CGRect
-    let depth: Int
+    let depth: Int32
     /// True when the cell stands in for a whole directory that was too small to expand.
     let collapsed: Bool
 }
@@ -13,7 +16,7 @@ struct TreemapCell {
 struct TreemapLayout {
     var cells: [TreemapCell] = []
     /// Frames of the directories that were expanded, for drawing nesting outlines.
-    var folderFrames: [(rect: CGRect, depth: Int)] = []
+    var folderFrames: [(rect: CGRect, depth: Int32)] = []
     private(set) var root: FileItem?
     private(set) var bounds: CGRect = .zero
 
@@ -29,27 +32,55 @@ struct TreemapLayout {
                       in bounds: CGRect,
                       measure: SizeMeasure,
                       minimumArea: CGFloat = 16,
-                      maximumDepth: Int = 64) -> TreemapLayout {
+                      maximumDepth: Int32 = 64) -> TreemapLayout {
         var layout = TreemapLayout()
         layout.root = root
         layout.bounds = bounds
         guard bounds.width > 1, bounds.height > 1 else { return layout }
-        layout.place(item: root, rect: bounds, depth: 0, measure: measure,
-                     minimumArea: minimumArea, maximumDepth: maximumDepth)
+
+        let builder = TreemapBuilder(measure: measure,
+                                     minimumArea: minimumArea,
+                                     maximumDepth: maximumDepth)
+        builder.place(item: root, rect: bounds, depth: 0)
+        layout.cells = builder.cells
+        layout.folderFrames = builder.folderFrames
         return layout
     }
+}
 
-    private mutating func place(item: FileItem,
-                                rect: CGRect,
-                                depth: Int,
-                                measure: SizeMeasure,
-                                minimumArea: CGFloat,
-                                maximumDepth: Int) {
+/// Builds the cell list.
+///
+/// Deliberately a class: as a struct, every recursive `place` call made from
+/// inside `squarify`'s closure copied the growing cell arrays, and the copies
+/// (plus their ARC traffic) cost more than the layout maths itself.
+private final class TreemapBuilder {
+    private(set) var cells: [TreemapCell] = []
+    private(set) var folderFrames: [(rect: CGRect, depth: Int32)] = []
+
+    private let measure: SizeMeasure
+    private let minimumArea: CGFloat
+    private let maximumDepth: Int32
+    /// Average on-screen area a child must be able to occupy before its parent
+    /// is expanded, in square points.
+    static let minimumChildArea: CGFloat = 3
+
+    init(measure: SizeMeasure, minimumArea: CGFloat, maximumDepth: Int32) {
+        self.measure = measure
+        self.minimumArea = minimumArea
+        self.maximumDepth = maximumDepth
+        cells.reserveCapacity(4096)
+        folderFrames.reserveCapacity(512)
+    }
+
+    func place(item: FileItem, rect: CGRect, depth: Int32) {
         let area = rect.width * rect.height
+        // Expanding a folder whose children would land on a fraction of a pixel
+        // each costs real time and shows nothing, so it stays a single tile.
         let expandable = item.isDirectory
             && !item.children.isEmpty
             && item.size(measure) > 0
             && area >= minimumArea * 4
+            && area >= CGFloat(item.children.count) * TreemapBuilder.minimumChildArea
             && depth < maximumDepth
 
         guard expandable else {
@@ -59,42 +90,37 @@ struct TreemapLayout {
         }
 
         folderFrames.append((rect, depth))
-        // Inset so nested folders read as containers, but never collapse the box.
-        let inset: CGFloat = (rect.width > 6 && rect.height > 6) ? 1 : 0
-        let inner = rect.insetBy(dx: inset, dy: inset)
 
+        // Children are kept sorted largest-first by the model, so the layout
+        // neither sorts nor allocates here; zero-sized entries sort to the end.
         let children = item.children
-            .filter { $0.size(measure) > 0 }
-            .sorted { $0.size(measure) > $1.size(measure) }
-        guard !children.isEmpty else {
+        var count = children.count
+        while count > 0, children[count - 1].size(measure) == 0 { count -= 1 }
+        guard count > 0 else {
             cells.append(TreemapCell(item: item, rect: rect, depth: depth, collapsed: true))
             return
         }
 
-        let total = children.reduce(UInt64(0)) { $0 + $1.size(measure) }
-        squarify(children: children,
-                 total: total,
-                 rect: inner,
-                 measure: measure) { child, childRect in
-            self.place(item: child, rect: childRect, depth: depth + 1, measure: measure,
-                       minimumArea: minimumArea, maximumDepth: maximumDepth)
-        }
+        var total: UInt64 = 0
+        for index in 0 ..< count { total &+= children[index].size(measure) }
+        // No inset: children tile their parent exactly, so the map has no gaps.
+        squarify(children: children, count: count, total: total, rect: rect, depth: depth)
     }
 
     /// Squarified treemap (Bruls, Huizing & van Wijk): fills the rect with rows of
     /// cells chosen to keep aspect ratios as close to square as possible.
     private func squarify(children: [FileItem],
+                          count: Int,
                           total: UInt64,
                           rect: CGRect,
-                          measure: SizeMeasure,
-                          emit: (FileItem, CGRect) -> Void) {
+                          depth: Int32) {
         var remaining = rect
         var remainingValue = Double(total)
         var index = 0
 
-        while index < children.count, remaining.width > 0.01, remaining.height > 0.01 {
-            let shortSide = min(remaining.width, remaining.height)
-            let scale = (remaining.width * remaining.height) / max(remainingValue, 1)
+        while index < count, remaining.width > 0.01, remaining.height > 0.01 {
+            let shortSide = Double(min(remaining.width, remaining.height))
+            let scale = Double(remaining.width * remaining.height) / max(remainingValue, 1)
 
             var rowValue = 0.0
             var rowCount = 0
@@ -102,13 +128,13 @@ struct TreemapLayout {
             var rowMax = 0.0
             var bestRatio = Double.greatestFiniteMagnitude
 
-            while index + rowCount < children.count {
+            while index + rowCount < count {
                 let value = Double(children[index + rowCount].size(measure))
                 let ratio = worstRatio(rowValue: rowValue + value,
                                        rowMin: min(rowMin, value),
                                        rowMax: max(rowMax, value),
-                                       shortSide: Double(shortSide),
-                                       scale: Double(scale))
+                                       shortSide: shortSide,
+                                       scale: scale)
                 if rowCount > 0 && ratio > bestRatio { break }
                 bestRatio = ratio
                 rowValue += value
@@ -116,19 +142,26 @@ struct TreemapLayout {
                 rowMax = max(rowMax, value)
                 rowCount += 1
             }
-            if rowCount == 0 { rowCount = 1; rowValue = Double(children[index].size(measure)) }
+            if rowCount == 0 {
+                rowCount = 1
+                rowValue = Double(children[index].size(measure))
+            }
 
-            let row = Array(children[index ..< index + rowCount])
-            let rowArea = CGFloat(rowValue) * scale
+            let rowArea = CGFloat(rowValue * scale)
+            // A row is a strip cut off the long side, laid out along the short one.
             let horizontal = remaining.width >= remaining.height
-            let thickness = min(horizontal ? remaining.height : remaining.width,
-                                shortSide > 0 ? rowArea / shortSide : 0)
+            let available = horizontal ? remaining.width : remaining.height
+            var thickness = min(available, shortSide > 0 ? rowArea / CGFloat(shortSide) : 0)
+            // The last row takes whatever is left, so the parent is tiled exactly
+            // and no sliver of background shows through between cells.
+            if index + rowCount >= count { thickness = available }
 
             var offset: CGFloat = 0
-            for (position, child) in row.enumerated() {
+            for position in 0 ..< rowCount {
+                let child = children[index + position]
                 let share = rowValue > 0 ? CGFloat(Double(child.size(measure)) / rowValue) : 0
-                var length = share * shortSide
-                if position == row.count - 1 { length = shortSide - offset }
+                var length = share * CGFloat(shortSide)
+                if position == rowCount - 1 { length = CGFloat(shortSide) - offset }
                 let cell: CGRect
                 if horizontal {
                     cell = CGRect(x: remaining.minX, y: remaining.minY + offset,
@@ -137,7 +170,9 @@ struct TreemapLayout {
                     cell = CGRect(x: remaining.minX + offset, y: remaining.minY,
                                   width: length, height: thickness)
                 }
-                if cell.width > 0.02 && cell.height > 0.02 { emit(child, cell) }
+                if cell.width > 0.02 && cell.height > 0.02 {
+                    place(item: child, rect: cell, depth: depth + 1)
+                }
                 offset += length
             }
 
