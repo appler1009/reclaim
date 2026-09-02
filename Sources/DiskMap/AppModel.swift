@@ -27,6 +27,10 @@ final class AppModel: ObservableObject {
     /// Direction of the last navigation, so the sidebar slides the same way the
     /// map zooms.
     private(set) var navigatedInwards = true
+    /// Bumped whenever the tree itself changes — currently only by trashing.
+    /// The map redraws when the folder in view changes identity, which a deletion
+    /// does not do, so without this the deleted tile stayed on screen.
+    private(set) var treeRevision = 0
     /// Hover lives in its own observable object so moving the pointer across the
     /// map repaints one readout instead of re-evaluating the whole window: a
     /// full SwiftUI pass costs ~10ms, and hover changes continuously.
@@ -43,6 +47,24 @@ final class AppModel: ObservableObject {
     @Published var hasFullDiskAccess = false
 
     private var session: ScanSession?
+
+    /// How an item is removed. Injectable so tests can exercise the bookkeeping
+    /// around a deletion without putting anything in the real Trash.
+    var trashItem: (URL) throws -> Void = { url in
+        var resulting: NSURL?
+        try FileManager.default.trashItem(at: url, resultingItemURL: &resulting)
+    }
+
+    /// Whether to ask before moving things to the Trash. Off once the user ticks
+    /// "Don't ask again"; the tray offers a way back.
+    var confirmsTrash: Bool {
+        get { UserDefaults.standard.object(forKey: Self.confirmsTrashKey) as? Bool ?? true }
+        set {
+            UserDefaults.standard.set(newValue, forKey: Self.confirmsTrashKey)
+            notify()
+        }
+    }
+    private static let confirmsTrashKey = "confirmsTrash"
     private var volumeObservers: [NSObjectProtocol] = []
 
     init() {
@@ -149,6 +171,9 @@ final class AppModel: ObservableObject {
         let session = ScanSession()
         self.session = session
         phase = .scanning
+        // Scanning somewhere else entirely: any folder queued for restoring by a
+        // rescan belongs to the previous target and must be dropped.
+        if scannedURL != url { pathToRestore = [] }
         scannedURL = url
         scanRoot = nil
         zoomRoot = nil
@@ -181,7 +206,7 @@ final class AppModel: ObservableObject {
                     return
                 }
                 self.scanRoot = root
-                self.zoomRoot = root
+                self.zoomRoot = self.restorePath(from: root)
                 self.refreshBreakdown()
                 self.phase = .ready
                 self.startNavigationStressIfRequested()
@@ -202,8 +227,27 @@ final class AppModel: ObservableObject {
         phase = scanRoot == nil ? .idle : .ready
     }
 
+    /// Rescans what was originally chosen — the whole volume or folder — because
+    /// re-reading only the folder in view would leave every total above it stale.
+    /// The folder you were looking at is restored afterwards, if it still exists.
     func rescan() {
-        if let scannedURL { scan(scannedURL) }
+        guard let scannedURL else { return }
+        pathToRestore = breadcrumb.dropFirst().map(\.name)
+        scan(scannedURL)
+    }
+
+    /// Path components below the scan root to re-open once a rescan finishes.
+    private var pathToRestore: [String] = []
+
+    private func restorePath(from root: FileItem) -> FileItem {
+        var node = root
+        for name in pathToRestore {
+            guard let next = node.children.first(where: { $0.name == name }),
+                  next.isDirectory else { break }
+            node = next
+        }
+        pathToRestore = []
+        return node
     }
 
     private func readVolumeInfo(for url: URL) {
@@ -212,6 +256,16 @@ final class AppModel: ObservableObject {
             volumeCapacity = UInt64(values.volumeTotalCapacity ?? 0)
             volumeFree = UInt64(values.volumeAvailableCapacityForImportantUsage ?? 0)
         }
+    }
+
+    /// Installs an already-scanned tree, so tests can drive the model without
+    /// waiting on a background scan.
+    func adoptForTesting(root: FileItem, url: URL) {
+        scanRoot = root
+        zoomRoot = root
+        scannedURL = url
+        phase = .ready
+        refreshBreakdown()
     }
 
     // MARK: - Selecting things to remove
@@ -253,9 +307,7 @@ final class AppModel: ObservableObject {
         for node in items {
             let bytes = node.size(measure)
             do {
-                var resulting: NSURL?
-                try FileManager.default.trashItem(at: URL(fileURLWithPath: node.path),
-                                                  resultingItemURL: &resulting)
+                try trashItem(URL(fileURLWithPath: node.path, isDirectory: node.isDirectory))
                 report.trashed.append((node.name, bytes))
                 report.bytes += bytes
                 node.parent?.remove(child: node)
@@ -269,6 +321,7 @@ final class AppModel: ObservableObject {
                                     "failed": "\(report.failures.count)",
                                     "bytes": "\(report.bytes)"])
         staged.removeAll()
+        treeRevision += 1
         lastReclaimed += report.bytes
         volumeFree += report.bytes
         selectedItem = nil

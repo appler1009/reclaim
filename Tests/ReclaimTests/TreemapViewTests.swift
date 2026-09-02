@@ -71,3 +71,41 @@ struct TreemapViewTests {
                            eventNumber: 0, clickCount: 0, pressure: 0)!
     }
 }
+
+@Suite("Map refresh")
+@MainActor
+struct TreemapRefreshTests {
+    private func tree() -> FileItem {
+        let a = FileItem(name: "a", isDirectory: false, logicalSize: 900, physicalSize: 900)
+        let b = FileItem(name: "b", isDirectory: false, logicalSize: 600, physicalSize: 600)
+        let c = FileItem(name: "c", isDirectory: false, logicalSize: 300, physicalSize: 300)
+        let root = FileItem(name: "/tmp/refresh", isDirectory: true, children: [a, b, c])
+        root.physicalSize = 1_800
+        root.children.sort { $0.physicalSize > $1.physicalSize }
+        return root
+    }
+
+    @Test func reloadPicksUpAnItemThatWasDeleted() {
+        let view = TreemapView(frame: NSRect(x: 0, y: 0, width: 500, height: 400))
+        let root = tree()
+        view.show(root: root)
+        #expect(view.laidOutItemsForTesting.count == 3)
+
+        // Same folder, one child gone: the map must not keep drawing it.
+        let doomed = root.children[0]
+        root.remove(child: doomed)
+        view.reload()
+
+        let names = view.laidOutItemsForTesting.map(\.name)
+        #expect(names.count == 2)
+        #expect(!names.contains(doomed.name))
+    }
+
+    @Test func reloadKeepsShowingTheSameFolder() {
+        let view = TreemapView(frame: NSRect(x: 0, y: 0, width: 500, height: 400))
+        let root = tree()
+        view.show(root: root)
+        view.reload()
+        #expect(view.root === root)
+    }
+}

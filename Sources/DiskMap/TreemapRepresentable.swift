@@ -13,7 +13,13 @@ struct TreemapRepresentable: NSViewRepresentable {
 
     func updateNSView(_ view: TreemapView, context: Context) {
         context.coordinator.model = model
-        if view.root !== model.zoomRoot { view.show(root: model.zoomRoot) }
+        if view.root !== model.zoomRoot {
+            view.show(root: model.zoomRoot)
+        } else if context.coordinator.appliedTreeRevision != model.treeRevision {
+            // Same folder, different contents: something was trashed.
+            view.reload()
+        }
+        context.coordinator.appliedTreeRevision = model.treeRevision
         if view.measure != model.measure { view.measure = model.measure }
         if view.isResizing != isResizing { view.isResizing = isResizing }
         let staged = model.stagedMarks
@@ -26,6 +32,7 @@ struct TreemapRepresentable: NSViewRepresentable {
     @MainActor
     final class Coordinator: TreemapViewDelegate {
         var model: AppModel
+        var appliedTreeRevision = 0
         init(model: AppModel) { self.model = model }
 
         nonisolated func treemap(_ view: TreemapView, didHover cell: TreemapCell?) {

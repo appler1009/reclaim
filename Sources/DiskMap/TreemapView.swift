@@ -125,8 +125,18 @@ final class TreemapView: NSView {
         needsDisplay = true
     }
 
+    /// Re-lays out the folder in view without treating it as navigation, for
+    /// when its contents changed underneath us.
+    func reload() {
+        hovered = nil
+        rebuild()
+    }
+
     /// Currently selected node, so SwiftUI can avoid redundant updates.
     var selectedItemIdentity: FileItem? { selected }
+
+    /// The tiles currently laid out, for tests.
+    var laidOutItemsForTesting: [FileItem] { layout.cells.map(\.item) }
 
     func select(_ item: FileItem?) {
         selected = item

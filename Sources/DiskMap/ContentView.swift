@@ -3,7 +3,6 @@ import SwiftUI
 
 struct ContentView: View {
     @StateObject private var model = AppModel()
-    @State private var confirming = false
     @State private var report: AppModel.DeleteReport?
     @State private var working = false
     @AppStorage(SidebarWidth.storageKey) private var storedSidebarWidth = SidebarWidth.default
@@ -33,7 +32,7 @@ struct ContentView: View {
                         })
                     BreakdownPane(model: model,
                                   working: working,
-                                  onTrash: { confirming = true })
+                                  onTrash: { confirmThenTrash() })
                         .frame(width: sidebarWidth)
                 }
             }
@@ -80,12 +79,6 @@ struct ContentView: View {
         }
         // Toolbar items default to icon-only; these read better with their words.
         .toolbarTitleDisplayMode(.inline)
-        .confirmationDialog(confirmTitle, isPresented: $confirming, titleVisibility: .visible) {
-            Button("Move to Trash", role: .destructive) { performTrash() }
-            Button("Cancel", role: .cancel) {}
-        } message: {
-            Text(confirmMessage)
-        }
         .alert("Moved \(ByteFormat.string(report?.bytes ?? 0)) to the Trash",
                isPresented: Binding(get: { report != nil }, set: { if !$0 { report = nil } })) {
             Button("Done") { report = nil }
@@ -99,18 +92,15 @@ struct ContentView: View {
         }
     }
 
-    private var confirmTitle: String {
-        "Move \(model.staged.count) item\(model.staged.count == 1 ? "" : "s") to the Trash?"
-    }
-
-    private var confirmMessage: String {
-        let items = model.staged
-        let preview = items.prefix(6)
-            .map { "· \($0.path)  (\(ByteFormat.string($0.size(model.measure))))" }
-            .joined(separator: "\n")
-        let more = items.count > 6 ? "\n· and \(items.count - 6) more…" : ""
-        return "This frees \(ByteFormat.string(model.stagedBytes)) once the Trash is emptied. "
-             + "Nothing is deleted permanently.\n\n" + preview + more
+    /// Asks first, unless the user has turned confirmations off.
+    private func confirmThenTrash() {
+        guard model.confirmsTrash else { performTrash() ; return }
+        let answer = TrashConfirmation.ask(items: model.staged,
+                                           bytes: model.stagedBytes,
+                                           measure: model.measure)
+        if answer.stopAsking { model.confirmsTrash = false }
+        guard answer.proceed else { return }
+        performTrash()
     }
 
     /// `--stress-resize` sweeps the divider through the same state path a real
@@ -152,7 +142,8 @@ struct ContentView: View {
         Task {
             let result = await model.trashStaged()
             working = false
-            report = result
+            // With confirmations off, stay quiet unless something went wrong.
+            if !result.failures.isEmpty || model.confirmsTrash { report = result }
         }
     }
 }
@@ -599,8 +590,19 @@ private struct TrashTray: View {
             .buttonStyle(PrimaryButtonStyle(enabled: !model.staged.isEmpty && !working))
             .disabled(model.staged.isEmpty || working)
 
-            Text("Items go to the Trash — you can put them back.")
-                .font(.system(size: 10)).foregroundStyle(.white.opacity(0.33))
+            if model.confirmsTrash {
+                Text("Items go to the Trash — you can put them back.")
+                    .font(.system(size: 10)).foregroundStyle(.white.opacity(0.33))
+            } else {
+                // The suppression checkbox needs a way back, or it is a one-way door.
+                Button { model.confirmsTrash = true } label: {
+                    Text("Confirmation off · ask me again")
+                        .font(.system(size: 10))
+                        .foregroundStyle(Color.caution.opacity(0.85))
+                }
+                .buttonStyle(.plain)
+                .help("Show the confirmation dialog before moving items to the Trash again")
+            }
         }
         .padding(12)
     }
