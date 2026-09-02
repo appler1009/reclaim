@@ -6,8 +6,13 @@ on:
   workflow_dispatch:
     inputs:
       tag:
-        description: "Tag to release (e.g. v1.0.0)"
+        description: "Existing tag to release (e.g. v1.0.0)"
         required: true
+
+# Two runs publishing the same tag would race over the same release.
+concurrency:
+  group: release-${{ github.event.inputs.tag || github.ref_name }}
+  cancel-in-progress: false
 
 jobs:
   release:
@@ -19,20 +24,38 @@ jobs:
       # once here and the steps test these instead.
       HAS_CERTIFICATE: ${{ secrets.DEVELOPER_ID_P12 != '' }}
       HAS_NOTARY: ${{ secrets.NOTARY_APPLE_ID != '' }}
+      TAG: ${{ github.event.inputs.tag || github.ref_name }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
+          # Check out the tag itself, so a manual run releases what it names
+          # rather than whatever the default branch happens to be.
+          ref: ${{ github.event.inputs.tag || github.ref }}
           fetch-depth: 0     # the build number is the commit count
+
+      - name: Only release what is on main
+        # A tag push carries no branch, so being "on main" has to be established
+        # by containment: the tagged commit must be an ancestor of main, or main
+        # itself. This is what stops a tag on a side branch shipping as a release.
+        run: |
+          set -euo pipefail
+          git fetch --no-tags origin +refs/heads/main:refs/remotes/origin/main
+          TAGGED=$(git rev-parse HEAD)
+          if ! git merge-base --is-ancestor "$TAGGED" origin/main; then
+            echo "::error::$TAG points at $TAGGED, which is not on main." >&2
+            echo "Merge it to main first, then move the tag." >&2
+            exit 1
+          fi
+          echo "$TAG is on main ($(git rev-parse --short "$TAGGED"))"
 
       - name: Check the tag matches VERSION
         # A tag that disagrees with the file is a mistake worth failing on
         # rather than shipping something named two different things.
-        env:
-          TAG: ${{ github.event.inputs.tag || github.ref_name }}
         run: |
+          set -euo pipefail
           FILE_VERSION="$(cat VERSION)"
           if [ "$TAG" != "v$FILE_VERSION" ]; then
-            echo "tag $TAG does not match VERSION ($FILE_VERSION)" >&2
+            echo "::error::tag $TAG does not match VERSION ($FILE_VERSION)" >&2
             exit 1
           fi
 
@@ -47,6 +70,7 @@ jobs:
           DEVELOPER_ID_P12: ${{ secrets.DEVELOPER_ID_P12 }}
           P12_PASSWORD: ${{ secrets.P12_PASSWORD }}
         run: |
+          set -euo pipefail
           KEYCHAIN=build.keychain
           KEYCHAIN_PASSWORD="$(uuidgen)"
           security create-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN"
@@ -65,6 +89,16 @@ jobs:
           TEAM_ID: ${{ secrets.TEAM_ID }}
         run: ./Scripts/build_app.sh release
 
+      - name: Confirm the build is signed for distribution
+        # A release that is only ad-hoc signed warns on every other Mac. Say so
+        # in the log rather than letting it be discovered after download.
+        run: |
+          if codesign -dvv dist/Reclaim.app 2>&1 | grep -q "Developer ID Application"; then
+            echo "signed for distribution"
+          else
+            echo "::warning::built without a Developer ID certificate — this release will warn on other Macs"
+          fi
+
       - name: Notarize
         # Also optional; a release without it still installs, with a warning.
         if: env.HAS_NOTARY == 'true'
@@ -73,28 +107,40 @@ jobs:
           NOTARY_PASSWORD: ${{ secrets.NOTARY_PASSWORD }}
           NOTARY_TEAM_ID: ${{ secrets.TEAM_ID }}
         run: |
+          set -euo pipefail
           ditto -c -k --keepParent dist/Reclaim.app dist/Reclaim.zip
           xcrun notarytool submit dist/Reclaim.zip \
             --apple-id "$NOTARY_APPLE_ID" \
             --password "$NOTARY_PASSWORD" \
             --team-id "$NOTARY_TEAM_ID" --wait
           xcrun stapler staple dist/Reclaim.app
+          xcrun stapler validate dist/Reclaim.app
           rm dist/Reclaim.zip
 
       - name: Package
+        id: package
         run: |
-          ditto -c -k --keepParent dist/Reclaim.app dist/Reclaim.zip
-          shasum -a 256 dist/Reclaim.zip | tee dist/Reclaim.zip.sha256
+          set -euo pipefail
+          plist=dist/Reclaim.app/Contents/Info.plist
+          VERSION=$(/usr/libexec/PlistBuddy -c "Print :CFBundleShortVersionString" "$plist")
+          BUILD=$(/usr/libexec/PlistBuddy -c "Print :CFBundleVersion" "$plist")
+          # Zipped with ditto: a plain zip loses the bundle's symlinks and modes.
+          ditto -c -k --keepParent dist/Reclaim.app "dist/Reclaim-$VERSION.zip"
+          shasum -a 256 "dist/Reclaim-$VERSION.zip" | tee "dist/Reclaim-$VERSION.zip.sha256"
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "build=$BUILD" >> "$GITHUB_OUTPUT"
 
       - name: Publish
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@v3
         with:
+          tag_name: ${{ env.TAG }}
+          name: Reclaim ${{ steps.package.outputs.version }} (build ${{ steps.package.outputs.build }})
           files: |
-            dist/Reclaim.zip
-            dist/Reclaim.zip.sha256
+            dist/Reclaim-${{ steps.package.outputs.version }}.zip
+            dist/Reclaim-${{ steps.package.outputs.version }}.zip.sha256
           generate_release_notes: true
           body: |
-            Reclaim ${{ github.ref_name }} — build is the commit count at the tag.
+            Build ${{ steps.package.outputs.build }} — the commit count at this tag.
 
-            Unzip and move Reclaim.app to /Applications. A whole-disk scan needs
+            Unzip and move **Reclaim.app** to `/Applications`. A whole-disk scan needs
             Full Disk Access in System Settings → Privacy & Security.

@@ -2,17 +2,20 @@ name: CI
 
 on:
   push:
-    branches: [main]
+    branches-ignore: []      # every branch: a broken push should say so early
   pull_request:
   workflow_dispatch:
 
+# A newer push to the same branch makes the older run pointless.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   test:
-    # The app uses recent SwiftUI and AppKit; pick the newest runner image
-    # available so the SDK is new enough to compile it.
     runs-on: macos-15
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           # The build number is the commit count, so the whole history is needed:
           # a shallow clone would number every build 1.
@@ -24,27 +27,53 @@ jobs:
           xcodebuild -version
 
       - name: Test
-        run: swift test
+        run: swift test 2>&1 | tee test-output.txt
 
       - name: Build app bundle
         # No signing identity on a runner: the script falls back to ad-hoc,
-        # which is enough to prove the bundle assembles and launches checks pass.
-        run: ./Scripts/build_app.sh release
+        # which is enough to prove the bundle assembles and its checks pass.
+        run: ./Scripts/build_app.sh release 2>&1 | tee build-output.txt
 
       - name: Verify the bundle
         run: |
-          /usr/libexec/PlistBuddy -c "Print :CFBundleShortVersionString" dist/Reclaim.app/Contents/Info.plist
-          /usr/libexec/PlistBuddy -c "Print :CFBundleVersion" dist/Reclaim.app/Contents/Info.plist
+          set -euo pipefail
+          plist=dist/Reclaim.app/Contents/Info.plist
+          VERSION=$(/usr/libexec/PlistBuddy -c "Print :CFBundleShortVersionString" "$plist")
+          BUILD=$(/usr/libexec/PlistBuddy -c "Print :CFBundleVersion" "$plist")
+          COMMIT=$(/usr/libexec/PlistBuddy -c "Print :ReclaimSourceCommit" "$plist")
+
+          # The build number is the commit count; anything else means the
+          # checkout was shallow and the version would be wrong in a release.
+          EXPECTED=$(git rev-list --count HEAD)
+          if [ "$BUILD" != "$EXPECTED" ]; then
+            echo "build number $BUILD does not match commit count $EXPECTED" >&2
+            exit 1
+          fi
+
+          test -f dist/Reclaim.app/Contents/Resources/Reclaim.icns
           codesign --verify --strict --verbose=1 dist/Reclaim.app
-          # The headless entry points are the cheapest end-to-end check there is.
+          # The headless entry points are the cheapest end-to-end check there is:
+          # they exercise the scanner and the volume listing for real.
           ./dist/Reclaim.app/Contents/MacOS/Reclaim --volumes
+          ./dist/Reclaim.app/Contents/MacOS/Reclaim --scan . | tee scan-output.txt
+          grep -q "^physical" scan-output.txt
+
+          TESTS=$(grep -oE "Test run with [0-9]+ tests" test-output.txt | tail -1)
+          {
+            echo "### Reclaim $VERSION (build $BUILD)"
+            echo
+            echo "- commit \`$COMMIT\`"
+            echo "- $TESTS"
+            echo "- signature: $(codesign -dvv dist/Reclaim.app 2>&1 | grep -c Authority) authorities"
+          } >> "$GITHUB_STEP_SUMMARY"
 
       - name: Package for download
         # Zipped with ditto rather than handed to the artifact action directly:
         # a .app is a directory, and uploading it loses the executable bit.
         run: ditto -c -k --keepParent dist/Reclaim.app dist/Reclaim.zip
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: Reclaim-app
           path: dist/Reclaim.zip
+          retention-days: 14

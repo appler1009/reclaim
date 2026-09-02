@@ -171,10 +171,15 @@ To release: bump `VERSION`, commit, and push a matching tag.
 echo 1.1.0 > VERSION && git commit -am "release 1.1.0" && git tag v1.1.0 && git push --tags
 ```
 
-`.github/workflows/release.yml` refuses to build a tag that disagrees with `VERSION`,
-then tests, builds, signs, notarizes, and attaches a zip to the GitHub release.
-`.github/workflows/ci.yml` tests and builds every push. Both use a full checkout, since a
-shallow clone would number every build 1.
+`.github/workflows/release.yml` refuses two mistakes before building anything: a tag whose
+commit is **not on `main`**, and a tag that disagrees with `VERSION`. A tag push carries no
+branch, so being on main is established by containment — the tagged commit must be an
+ancestor of `main`. It then tests, builds, signs, notarizes, and attaches a zip named for
+the version.
+
+`.github/workflows/ci.yml` tests and builds every push on every branch, and checks the
+build number really is the commit count — the cheapest way to catch a shallow checkout
+before it produces a mislabelled release. Both use a full checkout for that reason.
 
 Signing and notarizing in CI are optional and driven by repository secrets; with none set
 the workflow still produces an ad-hoc signed app, which runs locally but shows Gatekeeper's
