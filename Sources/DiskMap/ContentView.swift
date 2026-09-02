@@ -130,13 +130,19 @@ private struct HeaderBar: View {
                         .font(.system(size: 25, weight: .bold, design: .rounded))
                         .monospacedDigit()
                         .foregroundStyle(.white)
+                        .contentTransition(.numericText())
+                        .animation(.snappy(duration: 0.22), value: model.viewedBytes)
                     if model.zoomRoot !== model.scanRoot, model.scannedBytes > 0 {
                         Text("· \(Int((Double(model.viewedBytes) / Double(model.scannedBytes) * 100).rounded()))% of scan")
                             .font(.system(size: 11)).foregroundStyle(.white.opacity(0.45))
                     }
                 }
                 Metric(value: model.breakdown.files.formatted(), caption: "Files")
+                    .contentTransition(.numericText())
+                    .animation(.snappy(duration: 0.22), value: model.breakdown.files)
                 Metric(value: model.breakdown.rows.count.formatted(), caption: "Items here")
+                    .contentTransition(.numericText())
+                    .animation(.snappy(duration: 0.22), value: model.breakdown.rows.count)
                 if model.volumeCapacity > 0 {
                     Metric(value: ByteFormat.string(model.volumeFree), caption: "Free on volume")
                 }
@@ -202,6 +208,7 @@ private struct MapPane: View {
             .padding(.horizontal, 14)
             .frame(height: 38)
             .background(Color.panel.opacity(0.6))
+            .animation(.snappy(duration: 0.2), value: model.zoomRoot?.objectID)
 
             TreemapRepresentable(model: model)
                 .background(Color.ink)
@@ -263,7 +270,7 @@ private struct HoverBar: View {
                     .foregroundStyle(.white.opacity(0.5))
                     .help("Reveal in Finder")
             } else {
-                Text("Hover to inspect · double-click or scroll up to go into a folder · scroll down to go back")
+                Text("Hover to inspect · double-click or scroll down to go into a folder · scroll up to go back")
                     .font(.system(size: 11)).foregroundStyle(.white.opacity(0.32))
                 Spacer()
             }
@@ -295,6 +302,9 @@ private struct BreakdownPane: View {
                                 ForEach(model.breakdown.rows.prefix(60)) { row in
                                     BreakdownRowView(model: model, row: row)
                                 }
+                                // Keyed on the folder, so the whole list moves
+                                // as one when the map changes level.
+                                .id(model.zoomRoot?.objectID)
                                 if model.breakdown.rows.count > 60 {
                                     Text("+ \(model.breakdown.rows.count - 60) smaller items")
                                         .font(.system(size: 10))
@@ -316,7 +326,13 @@ private struct BreakdownPane: View {
                     }
                 }
                 .padding(12)
+                .transition(.asymmetric(
+                    insertion: .move(edge: model.navigatedInwards ? .bottom : .top)
+                        .combined(with: .opacity),
+                    removal: .opacity))
+                .id(model.zoomRoot?.objectID)
             }
+            .animation(.snappy(duration: 0.2), value: model.zoomRoot?.objectID)
 
             Divider().overlay(Color.hairline)
             TrashTray(model: model, working: working, onTrash: onTrash)

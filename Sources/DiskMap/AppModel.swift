@@ -17,6 +17,9 @@ final class AppModel: ObservableObject {
     @Published var breakdown = Breakdown()
     /// Items the user has picked for the Trash, in the order they picked them.
     @Published var staged: [FileItem] = []
+    /// Direction of the last navigation, so the sidebar slides the same way the
+    /// map zooms.
+    @Published private(set) var navigatedInwards = true
     @Published var hoverItem: FileItem?
     @Published var selectedItem: FileItem?
     @Published var measure: SizeMeasure = .physical
@@ -238,18 +241,22 @@ final class AppModel: ObservableObject {
 
     func zoom(into item: FileItem) {
         guard item.isDirectory, !item.children.isEmpty else { return }
+        navigatedInwards = true
         zoomRoot = item
         refreshBreakdown()
     }
 
     func zoomOut() {
         if let parent = zoomRoot?.parent {
+            navigatedInwards = false
             zoomRoot = parent
             refreshBreakdown()
         }
     }
 
     func show(_ node: FileItem) {
+        let target = node.isDirectory ? node : (node.parent ?? zoomRoot)
+        navigatedInwards = !(zoomRoot?.isDescendant(of: target ?? node) ?? true)
         zoomRoot = node.isDirectory ? node : (node.parent ?? zoomRoot)
         selectedItem = node
         refreshBreakdown()

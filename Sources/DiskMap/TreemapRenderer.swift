@@ -34,13 +34,18 @@ enum TreemapRenderer {
     private static let highlight = NSColor(white: 1, alpha: 0.10).cgColor
     private static let shadow = NSColor(white: 0, alpha: 0.28).cgColor
 
+    /// `fillBackground` is off while a transition composites two layouts over
+    /// one another — the second pass must not paint out the first.
     static func draw(layout: TreemapLayout,
                      in context: CGContext,
                      dirty: CGRect,
                      measure: SizeMeasure,
-                     staged: Set<ObjectIdentifier>) {
-        context.setFillColor(Theme.background.cgColor)
-        context.fill(dirty)
+                     staged: Set<ObjectIdentifier>,
+                     fillBackground: Bool = true) {
+        if fillBackground {
+            context.setFillColor(Theme.background.cgColor)
+            context.fill(dirty)
+        }
 
         for cell in layout.cells {
             let rect = cell.rect

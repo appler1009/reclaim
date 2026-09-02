@@ -29,6 +29,8 @@ final class TreemapView: NSView {
     private var hovered: TreemapCell?
     private var selected: FileItem?
     private var trackingArea: NSTrackingArea?
+    private var transition: TreemapTransition?
+    private var transitionTimer: Timer?
     private var scrollAccumulator: CGFloat = 0
     private var scrollCooldownEnds = Date.distantPast
 
@@ -44,10 +46,41 @@ final class TreemapView: NSView {
     override var acceptsFirstResponder: Bool { true }
 
     func show(root: FileItem?) {
+        let previousLayout = layout
+        let previousRoot = self.root
         self.root = root
         selected = nil
         hovered = nil
         rebuild()
+
+        // Anchor the zoom on the tile the move pivots around: the folder being
+        // entered (found in the old map) or the one being left (found in the new).
+        guard let root, let previousRoot, root !== previousRoot else { return }
+        if let entered = previousLayout.cells.first(where: { $0.item === root }) {
+            start(TreemapTransition(previous: previousLayout, focus: entered.rect, goingIn: true))
+        } else if let left = layout.cells.first(where: { $0.item === previousRoot }) {
+            start(TreemapTransition(previous: previousLayout, focus: left.rect, goingIn: false))
+        }
+    }
+
+    // MARK: - Transition
+
+    private func start(_ transition: TreemapTransition) {
+        self.transition = transition
+        transitionTimer?.invalidate()
+        // Driven off the display so the zoom lands on frame boundaries.
+        let timer = Timer(timeInterval: 1.0 / 120.0, repeats: true) { [weak self] timer in
+            guard let self else { timer.invalidate(); return }
+            if self.transition?.isFinished ?? true {
+                timer.invalidate()
+                self.transition = nil
+                self.transitionTimer = nil
+            }
+            self.needsDisplay = true
+        }
+        RunLoop.main.add(timer, forMode: .common)   // keeps running during scrolling
+        transitionTimer = timer
+        needsDisplay = true
     }
 
     /// Currently selected node, so SwiftUI can avoid redundant updates.
@@ -113,6 +146,29 @@ final class TreemapView: NSView {
 
     override func draw(_ dirtyRect: NSRect) {
         guard let context = NSGraphicsContext.current?.cgContext else { return }
+
+        if let transition, !transition.isFinished {
+            context.setFillColor(Theme.background.cgColor)
+            context.fill(bounds)
+
+            let outgoing = transition.outgoing(in: bounds)
+            context.saveGState()
+            context.setAlpha(outgoing.alpha)
+            context.concatenate(outgoing.transform)
+            TreemapRenderer.draw(layout: transition.previous, in: context, dirty: .infinite,
+                                 measure: measure, staged: stagedNodes, fillBackground: false)
+            context.restoreGState()
+
+            let incoming = transition.incoming(in: bounds)
+            context.saveGState()
+            context.setAlpha(incoming.alpha)
+            context.concatenate(incoming.transform)
+            TreemapRenderer.draw(layout: layout, in: context, dirty: .infinite,
+                                 measure: measure, staged: stagedNodes, fillBackground: false)
+            context.restoreGState()
+            return      // labels and chrome land when the movement settles
+        }
+
         TreemapRenderer.draw(layout: layout, in: context, dirty: dirtyRect,
                              measure: measure, staged: stagedNodes)
         // Labels are the expensive part of a redraw and unreadable mid-drag.
@@ -261,8 +317,9 @@ final class TreemapView: NSView {
         if let previous { setNeedsDisplay(previous.insetBy(dx: -2, dy: -2)) }
     }
 
-    /// Scrolling navigates the hierarchy: up into the folder under the pointer,
-    /// down back out of it — the same gesture people use to zoom a map.
+    /// Scrolling navigates the hierarchy: scrolling down goes *into* the folder
+    /// under the pointer, scrolling up comes back out — the content moves the way
+    /// the fingers do, as when scrolling down a page to go deeper into it.
     override func scrollWheel(with event: NSEvent) {
         guard event.deltaY != 0 || event.scrollingDeltaY != 0 else { return }
         let delta = event.hasPreciseScrollingDeltas ? event.scrollingDeltaY / 8 : event.deltaY
@@ -270,7 +327,7 @@ final class TreemapView: NSView {
 
         // One step per gesture burst, or a flick crosses several levels at once.
         guard abs(scrollAccumulator) >= 2.5, Date() >= scrollCooldownEnds else { return }
-        let goingIn = scrollAccumulator > 0
+        let goingIn = scrollAccumulator < 0
         scrollAccumulator = 0
         scrollCooldownEnds = Date().addingTimeInterval(0.28)
 
