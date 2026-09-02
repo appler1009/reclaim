@@ -44,6 +44,22 @@ enum FileFamily: String, CaseIterable {
     }
 
     var label: String { rawValue.capitalized }
+
+    /// Position in `allCases`, used to index the colour tables and the
+    /// per-folder totals. Both rely on this order, so it must not change.
+    var index: Int {
+        switch self {
+        case .code: return 0
+        case .media: return 1
+        case .image: return 2
+        case .archive: return 3
+        case .document: return 4
+        case .app: return 5
+        case .data: return 6
+        case .system: return 7
+        case .other: return 8
+        }
+    }
 }
 
 enum Theme {

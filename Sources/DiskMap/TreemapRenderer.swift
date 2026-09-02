@@ -81,20 +81,3 @@ enum TreemapRenderer {
         }
     }
 }
-
-extension FileFamily {
-    /// Index into the pre-resolved colour tables above.
-    var index: Int {
-        switch self {
-        case .code: return 0
-        case .media: return 1
-        case .image: return 2
-        case .archive: return 3
-        case .document: return 4
-        case .app: return 5
-        case .data: return 6
-        case .system: return 7
-        case .other: return 8
-        }
-    }
-}

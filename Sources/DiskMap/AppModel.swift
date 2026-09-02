@@ -128,6 +128,7 @@ final class AppModel: ObservableObject {
         }
         DispatchQueue.global(qos: .userInitiated).async {
             let root = Scanner.scan(url: url, options: ScanOptions(), session: session)
+            root?.warmTotals()
             DispatchQueue.main.async { [weak self] in
                 guard let self, self.session === session else { return }
                 guard !session.isCancelled else {

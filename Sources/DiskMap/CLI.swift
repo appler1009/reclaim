@@ -11,6 +11,11 @@ enum CLI {
             listVolumes()
             exit(0)
         }
+        if let index = arguments.firstIndex(of: "--bench-nav"), index + 1 < arguments.count {
+            if arguments.contains("--long") { navigationPasses = 400 }
+            benchmarkNavigation(URL(fileURLWithPath: arguments[index + 1]))
+            exit(0)
+        }
         if let index = arguments.firstIndex(of: "--bench-draw"), index + 1 < arguments.count {
             benchmarkDraw(URL(fileURLWithPath: arguments[index + 1]))
             exit(0)
@@ -134,5 +139,61 @@ extension CLI {
             print(String(format: "minArea %6.0f  draw %6.1f ms  %d cells",
                          minimumArea, best, layout.cells.count))
         }
+    }
+}
+
+extension CLI {
+    /// `Reclaim --bench-nav <path>` walks in and back out of the largest folders
+    /// the way scrolling does, timing exactly the work a navigation step costs:
+    /// the map layout plus the sidebar breakdown.
+    static var navigationPasses = 5
+
+    static func benchmarkNavigation(_ url: URL) {
+        let session = ScanSession()
+        guard let root = Scanner.scan(url: url, options: ScanOptions(), session: session) else { return }
+        let box = CGRect(x: 0, y: 0, width: 1200, height: 800)
+
+        // The app warms the per-family roll-ups on the scan thread; do the same
+        // here so the numbers describe what a user actually experiences.
+        let warmStarted = DispatchTime.now().uptimeNanoseconds
+        root.warmTotals()
+        print(String(format: "warm totals %6.1f ms",
+                     Double(DispatchTime.now().uptimeNanoseconds - warmStarted) / 1e6))
+
+        var path: [FileItem] = [root]
+        var timings: [Double] = []
+        var deepest = 0
+
+        func step(to node: FileItem) {
+            let started = DispatchTime.now().uptimeNanoseconds
+            _ = TreemapLayout.build(root: node, in: box, measure: .physical,
+                                    minimumArea: 16, maximumDepth: 1)
+            _ = Breakdown.of(node, measure: .physical)
+            timings.append(Double(DispatchTime.now().uptimeNanoseconds - started) / 1e6)
+        }
+
+        // Down to the deepest large folder, then back up.
+        for _ in 0 ..< navigationPasses {
+            while let current = path.last,
+                  let next = current.children.first(where: { $0.isDirectory && !$0.children.isEmpty }),
+                  path.count < 12 {
+                path.append(next)
+                step(to: next)
+            }
+            deepest = max(deepest, path.count)
+            while path.count > 1 {
+                path.removeLast()
+                step(to: path[path.count - 1])
+            }
+        }
+
+        let sorted = timings.sorted()
+        let worst = sorted.last ?? 0
+        let median = sorted.isEmpty ? 0 : sorted[sorted.count / 2]
+        let mean = timings.isEmpty ? 0 : timings.reduce(0, +) / Double(timings.count)
+        print(String(format: "%d navigation steps, depth %d", timings.count, deepest))
+        print(String(format: "median %6.2f ms   mean %6.2f ms   worst %6.2f ms", median, mean, worst))
+        print(String(format: "steps over 16ms (a dropped frame): %d",
+                     timings.filter { $0 > 16 }.count))
     }
 }

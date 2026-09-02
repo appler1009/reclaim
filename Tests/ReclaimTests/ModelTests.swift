@@ -137,3 +137,52 @@ struct VolumeTests {
         }
     }
 }
+
+@Suite("Family roll-ups")
+struct FamilyTotalsTests {
+    private func tree() -> FileItem {
+        let clip = FileItem(name: "a.mov", isDirectory: false, logicalSize: 900, physicalSize: 1_000)
+        let code = FileItem(name: "b.swift", isDirectory: false, logicalSize: 100, physicalSize: 200)
+        let inner = FileItem(name: "inner", isDirectory: true, fileCount: 2, children: [clip, code])
+        inner.physicalSize = 1_200
+        inner.logicalSize = 1_000
+        let photo = FileItem(name: "c.png", isDirectory: false, logicalSize: 300, physicalSize: 400)
+        let root = FileItem(name: "/tmp/rollup", isDirectory: true, fileCount: 3,
+                            children: [inner, photo])
+        root.physicalSize = 1_600
+        root.logicalSize = 1_300
+        return root
+    }
+
+    @Test func totalsMatchAManualWalkOfTheSubtree() {
+        let root = tree()
+        let totals = root.totals()
+        #expect(totals.bytes(.physical)[FileFamily.media.index] == 1_000)
+        #expect(totals.bytes(.physical)[FileFamily.code.index] == 200)
+        #expect(totals.bytes(.physical)[FileFamily.image.index] == 400)
+        #expect(totals.bytes(.logical)[FileFamily.media.index] == 900)
+        #expect(totals.bytes(.physical).reduce(0, +) == root.physicalSize)
+        #expect(totals.counts.reduce(0, +) == 3)
+    }
+
+    @Test func totalsAreComputedWithoutTheScannerHavingRun() {
+        // Hand-built trees must work too: the roll-up computes itself on demand.
+        #expect(tree().dominantFamily(.physical) == .media)
+    }
+
+    @Test func deletingUpdatesTheCachedRollUp() {
+        let root = tree()
+        let inner = root.children[0]
+        _ = root.totals()               // cache it first
+        root.remove(child: inner)
+        let totals = root.totals()
+        #expect(totals.bytes(.physical)[FileFamily.media.index] == 0)
+        #expect(totals.bytes(.physical)[FileFamily.image.index] == 400)
+        #expect(totals.counts.reduce(0, +) == 1)
+    }
+
+    @Test func emptyTotalsFallBackToOther() {
+        let empty = FileItem(name: "empty", isDirectory: true)
+        #expect(empty.dominantFamily(.physical) == .other)
+    }
+}

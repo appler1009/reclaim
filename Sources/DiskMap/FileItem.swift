@@ -76,14 +76,18 @@ final class FileItem {
     /// Removes `child`, subtracting its size from every ancestor.
     func remove(child: FileItem) {
         guard let index = children.firstIndex(where: { $0 === child }) else { return }
-        invalidateDominantFamily()
         children.remove(at: index)
         child.parent = nil
+        let removedTotals = child.totals()
         var node: FileItem? = self
         while let current = node {
             current.logicalSize -= min(current.logicalSize, child.logicalSize)
             current.physicalSize -= min(current.physicalSize, child.physicalSize)
             current.fileCount -= child.fileCount
+            if var totals = current.familyTotals {
+                totals.subtract(removedTotals)
+                current.familyTotals = totals
+            }
             node = current.parent
         }
     }
@@ -91,39 +95,49 @@ final class FileItem {
     /// Stable identity for SwiftUI lists (the tree is made of reference types).
     var objectID: ObjectIdentifier { ObjectIdentifier(self) }
 
-    private var dominantFamilyCache: FileFamily?
+    /// Cached classification for a file; directories keep `familyTotals` instead.
+    /// Filename parsing is expensive enough to have topped a profile, so it is
+    /// done once, during the scan's aggregation pass.
+    private var cachedFamily: FileFamily?
 
-    /// The kind of file this folder mostly holds, by bytes — the map colours a
-    /// folder tile by its contents rather than painting every folder the same
-    /// grey. Walked once per folder and cached; the map redraws constantly.
-    func dominantFamily(_ measure: SizeMeasure) -> FileFamily {
-        if let dominantFamilyCache { return dominantFamilyCache }
-        guard isDirectory else {
-            let family = FileFamily.of(self)
-            dominantFamilyCache = family
-            return family
-        }
-        var bytesByFamily: [FileFamily: UInt64] = [:]
-        var stack: [FileItem] = [self]
-        while let current = stack.popLast() {
-            if current.isDirectory {
-                stack.append(contentsOf: current.children)
-            } else {
-                let size = current.size(measure)
-                if size > 0 { bytesByFamily[FileFamily.of(current), default: 0] += size }
-            }
-        }
-        let family = bytesByFamily.max { $0.value < $1.value }?.key ?? .other
-        dominantFamilyCache = family
-        return family
+    /// Rolled-up per-family bytes and counts. Only directories carry one.
+    private(set) var familyTotals: FamilyTotals?
+
+    var family: FileFamily {
+        if let cachedFamily { return cachedFamily }
+        let resolved = FileFamily.of(self)
+        cachedFamily = resolved
+        return resolved
     }
 
-    private func invalidateDominantFamily() {
-        var node: FileItem? = self
-        while let current = node {
-            current.dominantFamilyCache = nil
-            node = current.parent
+    /// Per-family totals for everything at or below this node.
+    ///
+    /// Computed on first use and cached, so a folder is summed at most once no
+    /// matter how often it is revisited, and a parent reuses what its children
+    /// already worked out. Deriving these during the scan instead made scanning
+    /// three times slower for work the user may never look at.
+    func totals() -> FamilyTotals {
+        if let familyTotals { return familyTotals }
+        guard isDirectory else {
+            return FamilyTotals(family: family, physical: physicalSize, logical: logicalSize)
         }
+        var totals = FamilyTotals()
+        for child in children { totals.add(child.totals()) }
+        familyTotals = totals
+        return totals
+    }
+
+    /// Sums this subtree up front, off the main thread, so the first navigation
+    /// after a scan is as cheap as every later one.
+    func warmTotals() {
+        _ = totals()
+    }
+
+    /// The kind of file this folder mostly holds, by bytes — the map colours a
+    /// folder tile by its contents rather than painting every folder the same grey.
+    func dominantFamily(_ measure: SizeMeasure) -> FileFamily {
+        guard isDirectory else { return family }
+        return totals().dominant(measure)
     }
 
     func isDescendant(of other: FileItem) -> Bool {

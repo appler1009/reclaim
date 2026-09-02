@@ -44,22 +44,16 @@ struct Breakdown {
                          share: breakdown.total > 0 ? Double($0.bytes) / Double(breakdown.total) : 0)
         }
 
-        var bytesByFamily: [FileFamily: UInt64] = [:]
-        var filesByFamily: [FileFamily: Int] = [:]
-        var stack: [FileItem] = [node]
-        while let current = stack.popLast() {
-            if current.isDirectory {
-                stack.append(contentsOf: current.children)
-            } else {
-                let size = current.size(measure)
-                guard size > 0 else { continue }
-                let family = FileFamily.of(current)
-                bytesByFamily[family, default: 0] += size
-                filesByFamily[family, default: 0] += 1
+        // Per-type totals are maintained on the tree itself, so this is a read
+        // rather than a walk of everything below `node`.
+        let totals = node.totals()
+        let bytes = totals.bytes(measure)
+        breakdown.types = FileFamily.allCases.enumerated()
+            .compactMap { slot, family in
+                bytes[slot] > 0
+                    ? TypeTotal(family: family, bytes: bytes[slot], files: Int(totals.counts[slot]))
+                    : nil
             }
-        }
-        breakdown.types = bytesByFamily
-            .map { TypeTotal(family: $0.key, bytes: $0.value, files: filesByFamily[$0.key] ?? 0) }
             .sorted { $0.bytes > $1.bytes }
         return breakdown
     }
