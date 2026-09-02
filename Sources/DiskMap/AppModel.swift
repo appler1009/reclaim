@@ -54,11 +54,16 @@ final class AppModel: ObservableObject {
     /// The previous scan of this target, if one was ever recorded, and how long
     /// ago it was taken. What makes the app able to say "this grew".
     @Published private(set) var comparison: Snapshot?
+    /// What was scanned in earlier sessions, newest first. Read from disk, so it
+    /// survives quitting the app.
+    @Published private(set) var recentScans: [DiskQueries.TargetSummary] = []
     /// Top-level folders finished, of how many, and the fraction between them.
     @Published var scanCompletion: (done: Int, total: Int, fraction: Double) = (0, 0, 0)
 
     private var session: ScanSession?
-    var snapshotStore = SnapshotStore()
+    /// Where scan history is kept. Set at construction so the load that starts
+    /// immediately below reads from the right place.
+    let snapshotStore: SnapshotStore
     /// Ticks the partial sizes into the tree while a scan runs.
     private var liveTimer: Timer?
 
@@ -71,8 +76,10 @@ final class AppModel: ObservableObject {
 
     private var volumeObservers: [NSObjectProtocol] = []
 
-    init() {
+    init(snapshotStore: SnapshotStore = SnapshotStore()) {
+        self.snapshotStore = snapshotStore
         refreshVolumes()
+        refreshRecentScans()
         hasFullDiskAccess = Self.probeFullDiskAccess()
         Log.info("volumes discovered", ["count": "\(volumes.count)",
                                         "fullDiskAccess": "\(hasFullDiskAccess)"])
@@ -125,6 +132,15 @@ final class AppModel: ObservableObject {
 
     func refreshVolumes() {
         volumes = VolumeScanner.mounted()
+    }
+
+    /// Reloads the list of previously scanned targets from the history on disk.
+    func refreshRecentScans() {
+        let store = snapshotStore
+        DispatchQueue.global(qos: .utility).async {
+            let recent = DiskQueries(store: store).targets()
+            DispatchQueue.main.async { [weak self] in self?.recentScans = recent }
+        }
     }
 
     /// Measured off the main thread: the Trash can hold a lot of files.
@@ -296,6 +312,7 @@ final class AppModel: ObservableObject {
         DispatchQueue.global(qos: .utility).async {
             let snapshot = Snapshot(root: root, target: target, measure: measure)
             store.record(snapshot)
+            DispatchQueue.main.async { [weak self] in self?.refreshRecentScans() }
             Log.info("snapshot recorded", ["target": target,
                                            "bytes": "\(snapshot.totalBytes)",
                                            "entries": "\(snapshot.entries.count)"])

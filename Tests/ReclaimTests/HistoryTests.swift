@@ -129,3 +129,64 @@ struct SnapshotStoreTests {
         #expect(store.mostRecent(forTarget: "/never/scanned") == nil)
     }
 }
+
+@Suite("History across sessions")
+@MainActor
+struct HistoryPersistenceTests {
+    private func store() -> (SnapshotStore, URL) {
+        let directory = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("reclaim-session-\(UUID().uuidString)")
+        return (SnapshotStore(directory: directory), directory)
+    }
+
+    private func snapshot(target: String, bytes: UInt64, at date: Date) -> Snapshot {
+        let root = FileItem(name: target, isDirectory: true,
+                            children: [FileItem(name: "a.bin", isDirectory: false,
+                                                logicalSize: bytes, physicalSize: bytes)])
+        root.physicalSize = bytes
+        return Snapshot(root: root, target: target, measure: .physical, takenAt: date)
+    }
+
+    @Test func aNewSessionSeesWhatEarlierOnesRecorded() throws {
+        let (store, directory) = store()
+        defer { try? FileManager.default.removeItem(at: directory) }
+
+        // Session one records a scan and goes away.
+        store.record(snapshot(target: "/tmp/session", bytes: 5_000,
+                              at: Date().addingTimeInterval(-7200)))
+
+        // Session two: a brand new store object over the same directory, which is
+        // all a restart amounts to.
+        let reopened = SnapshotStore(directory: directory)
+        let targets = DiskQueries(store: reopened).targets()
+        #expect(targets.map(\.target) == ["/tmp/session"])
+        #expect(targets.first?.totalBytes == 5_000)
+    }
+
+    @Test func aRestartCanStillCompareAgainstTheLastSession() throws {
+        let (store, directory) = store()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        store.record(snapshot(target: "/tmp/session", bytes: 5_000,
+                              at: Date().addingTimeInterval(-7200)))
+
+        // A later session records a bigger scan and asks what changed.
+        let reopened = SnapshotStore(directory: directory)
+        reopened.record(snapshot(target: "/tmp/session", bytes: 9_000, at: Date()))
+        let growth = try #require(DiskQueries(store: reopened).growth(target: "/tmp/session"))
+        #expect(growth.totalChange == 4_000)
+    }
+
+    @Test func aFreshModelOffersWhatWasScannedBefore() async throws {
+        let (store, directory) = store()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        store.record(snapshot(target: "/tmp/offered", bytes: 3_000, at: Date()))
+
+        let model = AppModel(snapshotStore: store)
+
+        // Loaded off the main thread, so give it a moment to arrive.
+        for _ in 0 ..< 100 where model.recentScans.isEmpty {
+            try await Task.sleep(nanoseconds: 20_000_000)
+        }
+        #expect(model.recentScans.map(\.target) == ["/tmp/offered"])
+    }
+}

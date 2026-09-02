@@ -668,6 +668,10 @@ private struct Overlay: View {
 
                         VolumeGrid(model: model)
 
+                        if !model.recentScans.isEmpty {
+                            RecentScans(model: model)
+                        }
+
                         if !model.hasFullDiskAccess {
                             FullDiskAccessNote(model: model)
                         }
@@ -1007,5 +1011,71 @@ private struct ChangeChip: View {
             .foregroundStyle((change.isGrowth ? Color.ember : Color.green).opacity(0.95))
             .help("\(change.isGrowth ? "Grown" : "Shrunk") by \(ByteFormat.string(change.magnitude)) "
                   + "since the scan on \(change.since.formatted(date: .abbreviated, time: .shortened))")
+    }
+}
+
+
+/// What was scanned before, including in earlier sessions.
+///
+/// The history is on disk, so quitting loses nothing: this is the way back to a
+/// target without hunting for it in the file picker, and it says what that
+/// target was last measured at.
+private struct RecentScans: View {
+    @ObservedObject var model: AppModel
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Overline(text: "Scanned before")
+            VStack(spacing: 2) {
+                ForEach(model.recentScans.prefix(6), id: \.target) { scan in
+                    RecentScanRow(scan: scan) {
+                        model.scan(URL(fileURLWithPath: scan.target))
+                    }
+                }
+            }
+        }
+        .padding(.horizontal, 24)
+    }
+}
+
+private struct RecentScanRow: View {
+    let scan: DiskQueries.TargetSummary
+    let action: () -> Void
+    @State private var hovering = false
+
+    var body: some View {
+        Button(action: action) {
+            HStack(spacing: 10) {
+                Image(systemName: "clock.arrow.circlepath")
+                    .font(.system(size: 11))
+                    .foregroundStyle(.white.opacity(0.4))
+                VStack(alignment: .leading, spacing: 1) {
+                    Text(URL(fileURLWithPath: scan.target).lastPathComponent.isEmpty
+                         ? scan.target : URL(fileURLWithPath: scan.target).lastPathComponent)
+                        .font(.system(size: 12, weight: .medium))
+                        .foregroundStyle(.white.opacity(0.88))
+                    Text(scan.target)
+                        .font(.system(size: 10)).foregroundStyle(.white.opacity(0.38))
+                        .lineLimit(1).truncationMode(.middle)
+                }
+                Spacer(minLength: 8)
+                Text(scan.totalHuman)
+                    .font(.system(size: 12, weight: .semibold)).monospacedDigit()
+                    .foregroundStyle(.white.opacity(0.8))
+                Text(scan.lastScan.formatted(.relative(presentation: .named)))
+                    .font(.system(size: 10)).foregroundStyle(.white.opacity(0.35))
+                    .frame(width: 96, alignment: .trailing)
+            }
+            .padding(.horizontal, 12)
+            .padding(.vertical, 7)
+            .background(
+                RoundedRectangle(cornerRadius: 8, style: .continuous)
+                    .fill(Color.white.opacity(hovering ? 0.06 : 0.025))
+            )
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .onHover { hovering = $0 }
+        .help("Scan \(scan.target) again — last measured at \(scan.totalHuman)")
     }
 }
