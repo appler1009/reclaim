@@ -38,6 +38,9 @@ struct TreemapRepresentable: NSViewRepresentable {
         var appliedTreeRevision = 0
         private var hoverObserver: AnyCancellable?
         private var observedHover: HoverState?
+        private weak var observedView: TreemapView?
+        /// The tile the map last reported the pointer as being on.
+        private var mapHover: FileItem?
         init(model: AppModel) { self.model = model }
 
         /// Mirrors the shared hover onto the map, so a row hovered in the
@@ -47,16 +50,35 @@ struct TreemapRepresentable: NSViewRepresentable {
         /// `updateNSView`: hover changes on every mouse move, and going through
         /// SwiftUI would put a view update on each one — the cost this state was
         /// split out of `AppModel` to avoid.
+        ///
+        /// Keyed on the map as well as the hover: SwiftUI keeps the coordinator
+        /// across a new `makeNSView`, and a subscription still holding the
+        /// replaced view would leave list-driven outlines quietly dead.
         func follow(hoverOf model: AppModel, in view: TreemapView) {
-            guard model.hover !== observedHover else { return }
+            guard model.hover !== observedHover || view !== observedView else { return }
             observedHover = model.hover
+            observedView = view
             hoverObserver = model.hover.$item.sink { [weak view] item in
                 MainActor.assumeIsolated { view?.highlight(item) }
             }
+            // A fresh map starts blank, so hand it whatever is hovered already.
+            view.highlight(model.hover.item)
         }
 
         nonisolated func treemap(_ view: TreemapView, didHover cell: TreemapCell?) {
-            MainActor.assumeIsolated { model.setHover(cell?.item) }
+            MainActor.assumeIsolated {
+                // Leaving the map clears the hover only while the map's own tile
+                // is still the one held: crossing the splitter can deliver the
+                // row's entry before the map's exit, and an unguarded clear then
+                // blanked the highlight the pointer had just moved onto.
+                if let item = cell?.item {
+                    mapHover = item
+                    model.setHover(item)
+                } else if let departed = mapHover {
+                    mapHover = nil
+                    model.setHover(departed, isHovered: false)
+                }
+            }
         }
         nonisolated func treemap(_ view: TreemapView, didSelect cell: TreemapCell?) {
             MainActor.assumeIsolated { model.setSelection(cell?.item) }
