@@ -65,6 +65,16 @@ final class AppModel: ObservableObject {
     @Published var scanCompletion: (done: Int, total: Int, fraction: Double) = (0, 0, 0)
 
     private var session: ScanSession?
+    /// The scan root's children in the order the scanner numbered them, which is
+    /// the order `ScanSession.branchTotals()` is indexed by. The displayed
+    /// children are re-sorted on every tick, so position in `scanRoot.children`
+    /// says nothing about which branch a total belongs to.
+    ///
+    /// These must be the very same `FileItem` instances that `scanRoot.children`
+    /// holds — this is a second ordering of one set of objects, not a second set.
+    /// Rebuilding it with `map`, or copying the items, would write the sizes onto
+    /// objects the interface never shows.
+    private var branches: [FileItem] = []
     /// Where scan history is kept. Set at construction so the load that starts
     /// immediately below reads from the right place.
     let snapshotStore: SnapshotStore
@@ -269,6 +279,7 @@ final class AppModel: ObservableObject {
         scannedURL = url
         scanRoot = nil
         zoomRoot = nil
+        branches = []
         staged = []
         breakdown = Breakdown()
         selectedItem = nil
@@ -310,6 +321,7 @@ final class AppModel: ObservableObject {
                 }
                 self.scanRoot = root
                 self.zoomRoot = self.restorePath(from: root)
+                self.branches = []
                 self.isScanning = false
                 self.scanCompletion = (0, 0, 0)
                 self.phase = .ready
@@ -361,11 +373,22 @@ final class AppModel: ObservableObject {
     /// Shows the first level of a running scan and starts growing its sizes from
     /// the scanner's per-branch counters.
     private func adoptPartial(_ partial: FileItem, session: ScanSession) {
+        installPartial(partial, session: session)
+        startLiveUpdates(session: session)
+    }
+
+    /// Shows the first level of a running scan and applies the totals once.
+    ///
+    /// Split out from `adoptPartial` so tests can drive the ticks themselves,
+    /// through `applyBranchTotals(from:)`, without an 8 Hz timer left running
+    /// against the model — see `adoptForTesting` for the same idea.
+    func installPartial(_ partial: FileItem, session: ScanSession) {
         scanRoot = partial
         zoomRoot = partial
+        // The same objects `scanRoot.children` holds, in the scanner's order.
+        branches = partial.children
         phase = .ready              // the ordinary browsing UI, mid-scan
         applyBranchTotals(from: session)
-        startLiveUpdates(session: session)
     }
 
     private func startLiveUpdates(session: ScanSession) {
@@ -389,15 +412,21 @@ final class AppModel: ObservableObject {
 
     /// Copies the scanner's running totals onto the partial tree, largest first
     /// so the map keeps its usual ordering as it fills in.
-    private func applyBranchTotals(from session: ScanSession) {
+    ///
+    /// The totals are indexed by branch number and `root.children` is re-sorted
+    /// below on every tick, so they are read through `branches`, which keeps the
+    /// order the scanner numbered. Reading them by display position handed each
+    /// folder another folder's size, and since the sizes then moved around on
+    /// every tick the map's tiles swapped names several times a second.
+    func applyBranchTotals(from session: ScanSession) {
         scanCompletion = session.completion()
         guard isScanning, let root = scanRoot, root === zoomRoot else { return }
         let totals = session.branchTotals()
-        guard totals.bytes.count == root.children.count else { return }
+        guard totals.bytes.count == branches.count else { return }
 
         var total: UInt64 = 0
         var files = 0
-        for (index, child) in root.children.enumerated() {
+        for (index, child) in branches.enumerated() {
             if child.isDirectory {
                 child.physicalSize = totals.bytes[index]
                 child.logicalSize = totals.bytes[index]
