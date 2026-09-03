@@ -479,26 +479,35 @@ final class AppModel: ObservableObject {
         scannedURL != nil && !isScanning && staged.isEmpty
     }
 
-    /// The overnight run, once the hour has come.
-    private func runNightlyRescan() {
-        guard canRescanUnattended, let target = scannedURL?.path else {
-            Log.info("nightly rescan skipped", ["reason": skipReason])
-            return
+    /// The overnight run, once the hour has come. Returns what it decided.
+    @discardableResult
+    func runNightlyRescan() -> NightlyRescanOutcome {
+        guard let target = scannedURL?.path else {
+            Log.info("nightly rescan skipped", ["reason": "nothingScanned"])
+            return .nothingScanned
+        }
+        // Items picked for the Trash: this window sits the night out, and the
+        // target is deliberately left unclaimed so a sibling window showing the
+        // same thing with nothing picked can still take the run.
+        guard staged.isEmpty else {
+            Log.info("nightly rescan skipped", ["reason": "itemsPickedForTrash", "target": target])
+            return .itemsPickedForTrash
         }
         // Another window on the same target may have got here first.
         guard NightlyRescan.claim(target) else {
             Log.info("nightly rescan skipped", ["reason": "anotherWindowHasIt", "target": target])
-            return
+            return .anotherWindowHasIt
+        }
+        // Claimed before this is checked, on purpose: a window already scanning
+        // this target has the night's fresh numbers coming anyway, and holding
+        // the claim is what stops a sibling starting the very same scan beside it.
+        guard !isScanning else {
+            Log.info("nightly rescan skipped", ["reason": "alreadyScanning", "target": target])
+            return .alreadyScanning
         }
         Log.info("nightly rescan started", ["target": target])
         rescan()
-    }
-
-    private var skipReason: String {
-        if scannedURL == nil { return "nothingScanned" }
-        if isScanning { return "alreadyScanning" }
-        if !staged.isEmpty { return "itemsPickedForTrash" }
-        return "none"
+        return .started
     }
 
     /// Rescans what was originally chosen — the whole volume or folder — because
