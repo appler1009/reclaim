@@ -80,6 +80,8 @@ final class AppModel: ObservableObject {
     let snapshotStore: SnapshotStore
     /// Ticks the partial sizes into the tree while a scan runs.
     private var liveTimer: Timer?
+    /// Rescans this window's target overnight, when that is switched on.
+    private let nightly = NightlyRescan()
 
     /// How an item is removed. Injectable so tests can exercise the bookkeeping
     /// around a deletion without putting anything in the real Trash.
@@ -94,6 +96,7 @@ final class AppModel: ObservableObject {
 
     init(snapshotStore: SnapshotStore = SnapshotStore()) {
         self.snapshotStore = snapshotStore
+        nightly.action = { [weak self] in self?.runNightlyRescan() }
         refreshVolumes()
         refreshRecentScans()
         hasFullDiskAccess = Self.probeFullDiskAccess()
@@ -342,6 +345,7 @@ final class AppModel: ObservableObject {
                 self.treeRevision += 1
                 self.refreshTrashSize()
                 self.recordHistory(root: root, target: url.path)
+                self.nightly.isArmed = true
                 self.startNavigationStressIfRequested()
                 Log.info("scan finished", [
                     "path": url.path,
@@ -464,6 +468,46 @@ final class AppModel: ObservableObject {
         session?.cancel()
         session = nil
         phase = scanRoot == nil ? .idle : .ready
+    }
+
+    /// Whether tonight's scheduled rescan can go ahead.
+    ///
+    /// A rescan rebuilds the tree from scratch, which drops the selection with
+    /// it, so a window holding items picked for the Trash is left alone: losing
+    /// that list overnight is worse than a night of missing history.
+    var canRescanUnattended: Bool {
+        scannedURL != nil && !isScanning && staged.isEmpty
+    }
+
+    /// The overnight run, once the hour has come. Returns what it decided.
+    @discardableResult
+    func runNightlyRescan() -> NightlyRescanOutcome {
+        guard let target = scannedURL?.path else {
+            Log.info("nightly rescan skipped", ["reason": "nothingScanned"])
+            return .nothingScanned
+        }
+        // Items picked for the Trash: this window sits the night out, and the
+        // target is deliberately left unclaimed so a sibling window showing the
+        // same thing with nothing picked can still take the run.
+        guard staged.isEmpty else {
+            Log.info("nightly rescan skipped", ["reason": "itemsPickedForTrash", "target": target])
+            return .itemsPickedForTrash
+        }
+        // Another window on the same target may have got here first.
+        guard NightlyRescan.claim(target) else {
+            Log.info("nightly rescan skipped", ["reason": "anotherWindowHasIt", "target": target])
+            return .anotherWindowHasIt
+        }
+        // Claimed before this is checked, on purpose: a window already scanning
+        // this target has the night's fresh numbers coming anyway, and holding
+        // the claim is what stops a sibling starting the very same scan beside it.
+        guard !isScanning else {
+            Log.info("nightly rescan skipped", ["reason": "alreadyScanning", "target": target])
+            return .alreadyScanning
+        }
+        Log.info("nightly rescan started", ["target": target])
+        rescan()
+        return .started
     }
 
     /// Rescans what was originally chosen — the whole volume or folder — because

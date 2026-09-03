@@ -34,6 +34,10 @@ struct DiskMapApp: App {
                 NavigationCommands()
             }
         }
+
+        Settings {
+            SettingsView()
+        }
     }
 }
 
