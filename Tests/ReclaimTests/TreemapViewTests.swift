@@ -54,6 +54,95 @@ struct TreemapViewTests {
         #expect(recorder.hovered[1] == nil, "resizing should clear the hover")
     }
 
+    @Test func aRowHoverLightsItsTile() {
+        let view = TreemapView(frame: NSRect(x: 0, y: 0, width: 600, height: 400))
+        let recorder = Recorder()
+        view.delegate = recorder
+        let root = tree()
+        view.show(root: root)
+
+        view.highlight(root.children[1])
+        #expect(view.highlighted === root.children[1])
+        #expect(recorder.hovered.isEmpty, "a highlight from the list must not be echoed back to it")
+
+        view.highlight(nil)
+        #expect(view.highlighted == nil)
+    }
+
+    @Test func thePointerOwnsTheOutlineItIsAlreadyDrawing() {
+        let view = TreemapView(frame: NSRect(x: 0, y: 0, width: 600, height: 400))
+        let recorder = Recorder()
+        view.delegate = recorder
+        view.show(root: tree())
+
+        view.mouseMoved(with: mouseEvent(at: NSPoint(x: 100, y: 100)))
+        let underPointer = try? #require(recorder.hovered.first ?? nil)
+
+        // The list is told about the map's hover too, and echoes it straight
+        // back; the tile must not end up outlined twice.
+        view.highlight(underPointer)
+        #expect(view.highlighted == nil)
+    }
+
+    /// The map's exit and the row's entry can arrive in either order when the
+    /// pointer crosses the splitter, so the exit must not clear a hover the list
+    /// has already taken over.
+    @Test func leavingTheMapKeepsAHoverTheListHasTakenOver() {
+        let model = AppModel()
+        let coordinator = TreemapRepresentable.Coordinator(model: model)
+        let view = TreemapView(frame: NSRect(x: 0, y: 0, width: 600, height: 400))
+        let root = tree()
+        view.show(root: root)
+        coordinator.follow(hoverOf: model, in: view)
+
+        let tile = root.children[0]
+        coordinator.treemap(view, didHover: TreemapCell(item: tile, rect: .zero, depth: 1, collapsed: false))
+        #expect(model.hover.item === tile)
+
+        // The row under the pointer claims the hover first, then the map reports
+        // that the pointer has left it.
+        let row = root.children[1]
+        model.setHover(row, isHovered: true)
+        coordinator.treemap(view, didHover: nil)
+        #expect(model.hover.item === row)
+    }
+
+    @Test func leavingTheMapClearsItsOwnHover() {
+        let model = AppModel()
+        let coordinator = TreemapRepresentable.Coordinator(model: model)
+        let view = TreemapView(frame: NSRect(x: 0, y: 0, width: 600, height: 400))
+        let root = tree()
+        view.show(root: root)
+        coordinator.follow(hoverOf: model, in: view)
+
+        let tile = root.children[0]
+        coordinator.treemap(view, didHover: TreemapCell(item: tile, rect: .zero, depth: 1, collapsed: false))
+        coordinator.treemap(view, didHover: nil)
+        #expect(model.hover.item == nil)
+    }
+
+    /// SwiftUI keeps the coordinator when it builds a new map, so the hover
+    /// subscription has to follow the map that is actually on screen.
+    @Test func aReplacementMapPicksUpTheHoverSubscription() {
+        let model = AppModel()
+        let coordinator = TreemapRepresentable.Coordinator(model: model)
+        let first = TreemapView(frame: NSRect(x: 0, y: 0, width: 600, height: 400))
+        let root = tree()
+        first.show(root: root)
+        coordinator.follow(hoverOf: model, in: first)
+
+        model.setHover(root.children[1], isHovered: true)
+        #expect(first.highlighted === root.children[1])
+
+        let second = TreemapView(frame: NSRect(x: 0, y: 0, width: 600, height: 400))
+        second.show(root: root)
+        coordinator.follow(hoverOf: model, in: second)
+        #expect(second.highlighted === root.children[1], "the new map should show what is hovered already")
+
+        model.setHover(root.children[2], isHovered: true)
+        #expect(second.highlighted === root.children[2])
+    }
+
     @Test func hoverIsIgnoredWhileResizing() {
         let view = TreemapView(frame: NSRect(x: 0, y: 0, width: 600, height: 400))
         let recorder = Recorder()

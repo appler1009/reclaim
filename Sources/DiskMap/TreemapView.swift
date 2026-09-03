@@ -32,6 +32,9 @@ final class TreemapView: NSView {
     /// How long the last layout took, used to decide whether it can be done inline.
     private var lastLayoutDuration: TimeInterval = 0
     private var hovered: TreemapCell?
+    /// A tile highlighted from outside the map, because the pointer is over the
+    /// matching row in the contents list rather than over the map itself.
+    private(set) var highlighted: FileItem?
     private var selected: FileItem?
     private var trackingArea: NSTrackingArea?
     private var transition: TreemapTransition?
@@ -97,6 +100,7 @@ final class TreemapView: NSView {
         self.root = root
         selected = nil
         hovered = nil
+        highlighted = nil
         rebuild()
 
         // Anchor the zoom on the tile the move pivots around: the folder being
@@ -358,6 +362,25 @@ final class TreemapView: NSView {
             context.setLineWidth(1.5)
             context.stroke(hovered.rect.insetBy(dx: 0.75, dy: 0.75))
         }
+        if let highlighted, let rect = frame(of: highlighted) {
+            context.setStrokeColor(Theme.accent.withAlphaComponent(0.95).cgColor)
+            context.setLineWidth(1.5)
+            context.stroke(rect.insetBy(dx: 0.75, dy: 0.75))
+        }
+    }
+
+    /// Outlines the tile for `item` as though the pointer were on it.
+    ///
+    /// Drives the map from the contents list: hovering a row lights its tile.
+    /// The pointer's own hover already draws itself, so an item the map is
+    /// hovering is left alone rather than outlined twice.
+    func highlight(_ item: FileItem?) {
+        let wanted = item === hovered?.item ? nil : item
+        guard wanted !== highlighted else { return }
+        let previous = highlighted.flatMap(frame(of:))
+        highlighted = wanted
+        if let previous { setNeedsDisplay(previous.insetBy(dx: -2, dy: -2)) }
+        if let rect = wanted.flatMap(frame(of:)) { setNeedsDisplay(rect.insetBy(dx: -2, dy: -2)) }
     }
 
     private func frame(of item: FileItem) -> CGRect? {
@@ -399,6 +422,9 @@ final class TreemapView: NSView {
         guard cell?.item !== hovered?.item else { return }
         let previous = hovered?.rect
         hovered = cell
+        // The pointer owns the outline now; drop any list-driven one on the
+        // same tile so it is not stroked twice.
+        if highlighted === cell?.item { highlighted = nil }
         delegate?.treemap(self, didHover: cell)
         // Only the outgoing and incoming outlines changed.
         if let previous { setNeedsDisplay(previous.insetBy(dx: -2, dy: -2)) }

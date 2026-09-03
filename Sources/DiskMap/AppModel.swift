@@ -245,6 +245,19 @@ final class AppModel: ObservableObject {
         hover.set(item)
     }
 
+    /// Hover reported by one contents row.
+    ///
+    /// A row only clears the hover while it is still the row holding it: SwiftUI
+    /// can deliver a row's exit after the next row's entry, and clearing blindly
+    /// blanked the highlight the pointer had just moved onto.
+    func setHover(_ item: FileItem, isHovered: Bool) {
+        if isHovered {
+            hover.set(item)
+        } else if hover.item === item {
+            hover.set(nil)
+        }
+    }
+
     func setSelection(_ item: FileItem?) {
         guard item !== selectedItem else { return }
         selectedItem = item
