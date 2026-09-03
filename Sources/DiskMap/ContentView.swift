@@ -407,17 +407,18 @@ private struct BreakdownPane: View {
                         UpRow(parentName: parent.name) { model.zoomOut() }
                     }
                     ForEach(model.breakdown.rows.prefix(40)) { row in
-                        BreakdownRowView(
+                        HoverableRow(
+                            hover: model.hover,
                             row: row,
                             measure: model.measure,
                             change: model.change(forPath: row.node.path, currentBytes: row.bytes),
                             isStaged: model.isStaged(row.node),
                             isSelected: model.selectedItem === row.node,
+                            onHover: { model.setHover(row.node, isHovered: $0) },
                             onToggleStaged: { model.toggleStaged(row.node) },
                             onShow: { model.show(row.node) },
                             onOpen: { model.zoom(into: row.node) },
                             onReveal: { model.revealInFinder(row.node) })
-                        .equatable()
                     }
                     if model.breakdown.rows.count > 40 {
                         Text("+ \(model.breakdown.rows.count - 40) smaller items")
@@ -459,6 +460,42 @@ private struct BreakdownPane: View {
     }
 }
 
+/// Feeds one row the shared hover, and nothing else.
+///
+/// The hover it watches changes on every mouse move, so the row itself is kept
+/// out of that subscription: this wrapper is all that rebuilds, and the row
+/// below it is `Equatable`, so only the two rows whose highlight actually
+/// changed are redrawn.
+private struct HoverableRow: View {
+    @ObservedObject var hover: HoverState
+    let row: BreakdownRow
+    let measure: SizeMeasure
+    let change: SizeChange?
+    let isStaged: Bool
+    let isSelected: Bool
+    let onHover: (Bool) -> Void
+    let onToggleStaged: () -> Void
+    let onShow: () -> Void
+    let onOpen: () -> Void
+    let onReveal: () -> Void
+
+    var body: some View {
+        BreakdownRowView(
+            row: row,
+            measure: measure,
+            change: change,
+            isStaged: isStaged,
+            isSelected: isSelected,
+            isHovered: hover.item === row.node,
+            onHover: onHover,
+            onToggleStaged: onToggleStaged,
+            onShow: onShow,
+            onOpen: onOpen,
+            onReveal: onReveal)
+        .equatable()
+    }
+}
+
 private struct BreakdownRowView: View, Equatable {
     let row: BreakdownRow
     let measure: SizeMeasure
@@ -466,12 +503,13 @@ private struct BreakdownRowView: View, Equatable {
     let change: SizeChange?
     let isStaged: Bool
     let isSelected: Bool
+    /// True while the pointer is on this row *or* on its tile in the map.
+    let isHovered: Bool
+    let onHover: (Bool) -> Void
     let onToggleStaged: () -> Void
     let onShow: () -> Void
     let onOpen: () -> Void
     let onReveal: () -> Void
-
-    @State private var hovering = false
 
     static func == (lhs: BreakdownRowView, rhs: BreakdownRowView) -> Bool {
         lhs.row.id == rhs.row.id
@@ -480,6 +518,7 @@ private struct BreakdownRowView: View, Equatable {
             && lhs.change?.bytes == rhs.change?.bytes
             && lhs.isStaged == rhs.isStaged
             && lhs.isSelected == rhs.isSelected
+            && lhs.isHovered == rhs.isHovered
     }
 
     var body: some View {
@@ -525,10 +564,10 @@ private struct BreakdownRowView: View, Equatable {
         .padding(.vertical, 5)
         .background(
             RoundedRectangle(cornerRadius: 6)
-                .fill(hovering || isSelected ? Color.white.opacity(0.05) : .clear)
+                .fill(isHovered || isSelected ? Color.white.opacity(0.05) : .clear)
         )
         .contentShape(Rectangle())
-        .onHover { hovering = $0 }
+        .onHover(perform: onHover)
         .onTapGesture(perform: onShow)
         .contextMenu {
             if row.isDirectory { Button("Open in Map", action: onOpen) }

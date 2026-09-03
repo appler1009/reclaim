@@ -54,6 +54,36 @@ struct TreemapViewTests {
         #expect(recorder.hovered[1] == nil, "resizing should clear the hover")
     }
 
+    @Test func aRowHoverLightsItsTile() {
+        let view = TreemapView(frame: NSRect(x: 0, y: 0, width: 600, height: 400))
+        let recorder = Recorder()
+        view.delegate = recorder
+        let root = tree()
+        view.show(root: root)
+
+        view.highlight(root.children[1])
+        #expect(view.highlighted === root.children[1])
+        #expect(recorder.hovered.isEmpty, "a highlight from the list must not be echoed back to it")
+
+        view.highlight(nil)
+        #expect(view.highlighted == nil)
+    }
+
+    @Test func thePointerOwnsTheOutlineItIsAlreadyDrawing() {
+        let view = TreemapView(frame: NSRect(x: 0, y: 0, width: 600, height: 400))
+        let recorder = Recorder()
+        view.delegate = recorder
+        view.show(root: tree())
+
+        view.mouseMoved(with: mouseEvent(at: NSPoint(x: 100, y: 100)))
+        let underPointer = try? #require(recorder.hovered.first ?? nil)
+
+        // The list is told about the map's hover too, and echoes it straight
+        // back; the tile must not end up outlined twice.
+        view.highlight(underPointer)
+        #expect(view.highlighted == nil)
+    }
+
     @Test func hoverIsIgnoredWhileResizing() {
         let view = TreemapView(frame: NSRect(x: 0, y: 0, width: 600, height: 400))
         let recorder = Recorder()

@@ -1,3 +1,4 @@
+import Combine
 import SwiftUI
 
 struct TreemapRepresentable: NSViewRepresentable {
@@ -8,11 +9,13 @@ struct TreemapRepresentable: NSViewRepresentable {
     func makeNSView(context: Context) -> TreemapView {
         let view = TreemapView()
         view.delegate = context.coordinator
+        context.coordinator.follow(hoverOf: model, in: view)
         return view
     }
 
     func updateNSView(_ view: TreemapView, context: Context) {
         context.coordinator.model = model
+        context.coordinator.follow(hoverOf: model, in: view)
         if view.root !== model.zoomRoot {
             view.show(root: model.zoomRoot)
         } else if context.coordinator.appliedTreeRevision != model.treeRevision {
@@ -33,7 +36,24 @@ struct TreemapRepresentable: NSViewRepresentable {
     final class Coordinator: TreemapViewDelegate {
         var model: AppModel
         var appliedTreeRevision = 0
+        private var hoverObserver: AnyCancellable?
+        private var observedHover: HoverState?
         init(model: AppModel) { self.model = model }
+
+        /// Mirrors the shared hover onto the map, so a row hovered in the
+        /// contents list lights its tile.
+        ///
+        /// Subscribed straight to `HoverState` rather than read in
+        /// `updateNSView`: hover changes on every mouse move, and going through
+        /// SwiftUI would put a view update on each one — the cost this state was
+        /// split out of `AppModel` to avoid.
+        func follow(hoverOf model: AppModel, in view: TreemapView) {
+            guard model.hover !== observedHover else { return }
+            observedHover = model.hover
+            hoverObserver = model.hover.$item.sink { [weak view] item in
+                MainActor.assumeIsolated { view?.highlight(item) }
+            }
+        }
 
         nonisolated func treemap(_ view: TreemapView, didHover cell: TreemapCell?) {
             MainActor.assumeIsolated { model.setHover(cell?.item) }
