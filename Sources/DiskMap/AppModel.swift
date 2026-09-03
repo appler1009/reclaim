@@ -81,8 +81,7 @@ final class AppModel: ObservableObject {
         refreshVolumes()
         refreshRecentScans()
         hasFullDiskAccess = Self.probeFullDiskAccess()
-        Log.info("volumes discovered", ["count": "\(volumes.count)",
-                                        "fullDiskAccess": "\(hasFullDiskAccess)"])
+        Log.info("full disk access probed", ["fullDiskAccess": "\(hasFullDiskAccess)"])
         let center = NSWorkspace.shared.notificationCenter
         for name in [NSWorkspace.didMountNotification,
                      NSWorkspace.didUnmountNotification,
@@ -130,8 +129,23 @@ final class AppModel: ObservableObject {
         launchArgumentConsumed = false
     }
 
+    /// Read off the main thread, and not only to be tidy.
+    ///
+    /// `volumeAvailableCapacityForImportantUsage` is the number Finder shows —
+    /// free space including what the system could purge — and it is the one
+    /// expensive key in the set: measured across this machine's seven volumes it
+    /// costs ~45ms, against 0.05ms for all the others together. It ran inside
+    /// `init`, so it sat in front of the first frame, and again on every
+    /// mount/unmount and after every scan.
     func refreshVolumes() {
-        volumes = VolumeScanner.mounted()
+        DispatchQueue.global(qos: .userInitiated).async {
+            let found = VolumeScanner.mounted()
+            DispatchQueue.main.async { [weak self] in
+                guard let self else { return }
+                self.volumes = found
+                Log.info("volumes discovered", ["count": "\(found.count)"])
+            }
+        }
     }
 
     /// Reloads the list of previously scanned targets from the history on disk.
