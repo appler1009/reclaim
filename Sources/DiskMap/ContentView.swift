@@ -775,7 +775,7 @@ private struct VolumeGrid: View {
                     VolumeCard(volume: volume) { model.scan(volume: volume) }
                 }
             }
-            if model.volumes.isEmpty {
+            if model.volumesLoaded && model.volumes.isEmpty {
                 Text("No mounted volumes found.")
                     .font(.system(size: 12)).foregroundStyle(.white.opacity(0.4))
             }

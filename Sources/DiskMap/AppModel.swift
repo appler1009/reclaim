@@ -46,6 +46,10 @@ final class AppModel: ObservableObject {
     /// How much of that this session put there.
     @Published var trashedThisSession: UInt64 = 0
     @Published var volumes: [VolumeInfo] = []
+    /// Whether the first enumeration has come back. `volumes` is filled in off
+    /// the main thread, so "empty" and "not looked yet" are different states and
+    /// the empty-state copy must only speak for the first.
+    @Published private(set) var volumesLoaded = false
     /// Whole-disk scans are meaningless without Full Disk Access; we probe for it
     /// so the UI can say so before the user waits for a half-empty result.
     @Published var hasFullDiskAccess = false
@@ -75,14 +79,15 @@ final class AppModel: ObservableObject {
     }
 
     private var volumeObservers: [NSObjectProtocol] = []
+    /// Counts enumerations so a slow one cannot overwrite a newer result.
+    private var volumeRefresh = 0
 
     init(snapshotStore: SnapshotStore = SnapshotStore()) {
         self.snapshotStore = snapshotStore
         refreshVolumes()
         refreshRecentScans()
         hasFullDiskAccess = Self.probeFullDiskAccess()
-        Log.info("volumes discovered", ["count": "\(volumes.count)",
-                                        "fullDiskAccess": "\(hasFullDiskAccess)"])
+        Log.info("full disk access probed", ["fullDiskAccess": "\(hasFullDiskAccess)"])
         let center = NSWorkspace.shared.notificationCenter
         for name in [NSWorkspace.didMountNotification,
                      NSWorkspace.didUnmountNotification,
@@ -130,8 +135,30 @@ final class AppModel: ObservableObject {
         launchArgumentConsumed = false
     }
 
+    /// Read off the main thread, and not only to be tidy.
+    ///
+    /// `volumeAvailableCapacityForImportantUsage` is the number Finder shows —
+    /// free space including what the system could purge — and it is the one
+    /// expensive key in the set: measured across this machine's seven volumes it
+    /// costs ~45ms, against 0.05ms for all the others together. It ran inside
+    /// `init`, so it sat in front of the first frame, and again on every
+    /// mount/unmount and after every scan.
     func refreshVolumes() {
-        volumes = VolumeScanner.mounted()
+        volumeRefresh &+= 1
+        let generation = volumeRefresh
+        DispatchQueue.global(qos: .userInitiated).async {
+            let found = VolumeScanner.mounted()
+            DispatchQueue.main.async { [weak self] in
+                guard let self else { return }
+                // A mount storm can start several of these; they take as long as
+                // the slowest disk answers, so they can finish out of order.
+                // Only the newest enumeration describes the present.
+                guard generation == self.volumeRefresh else { return }
+                self.volumes = found
+                self.volumesLoaded = true
+                Log.info("volumes discovered", ["count": "\(found.count)"])
+            }
+        }
     }
 
     /// Reloads the list of previously scanned targets from the history on disk.

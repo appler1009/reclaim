@@ -12,9 +12,23 @@ struct ScanOptions {
     /// Count a hard-linked file only the first time it is seen.
     var countHardLinksOnce = true
     var includeHidden = true
-    /// Directory readers running in parallel. Scanning is dominated by I/O
-    /// latency, so oversubscribing the cores is what actually makes it fast.
-    var workers = max(8, ProcessInfo.processInfo.activeProcessorCount * 4)
+    /// Directory readers running in parallel.
+    ///
+    /// One per core, and never fewer than eight. This used to be four per core,
+    /// on the theory that scanning is I/O-bound and oversubscribing hides the
+    /// latency. On a warm cache it is not I/O-bound at all — it is syscall-bound
+    /// — and 40 threads on 10 cores spent their time descheduling each other: a
+    /// `~/Library` scan ran 2.3s with 10 workers and 6.1s with 40, for the same
+    /// work.
+    ///
+    /// The floor of eight is deliberate, and is oversubscription on a machine
+    /// with fewer cores than that. Contention is what makes a large thread count
+    /// expensive, and a small machine has little; too few readers, meanwhile,
+    /// leaves the disk waiting, which is measurable even here — four workers ran
+    /// the same scan in 3.2s against 2.3s for ten. All of this was measured on a
+    /// 10-core machine, so the floor is a hedge for hardware that was not
+    /// available to test, not a second measured optimum.
+    var workers = max(8, ProcessInfo.processInfo.activeProcessorCount)
 }
 
 /// Thread-safe cancellation + progress accounting shared by the scan workers.
