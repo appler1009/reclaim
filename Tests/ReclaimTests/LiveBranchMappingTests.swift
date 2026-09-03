@@ -33,14 +33,13 @@ struct LiveBranchMappingTests {
 
         let model = AppModel()
         model.isScanning = true
-        model.adoptPartial(top, session: session)
+        model.installPartial(top, session: session)
 
         // The tick above sorted the children; a later tick sees that new order.
         // Reversing here stands in for any re-ordering and keeps the test
         // independent of the order the filesystem returned.
         model.scanRoot?.children.reverse()
         model.applyBranchTotals(from: session)
-        model.stopLiveUpdates()
 
         let root = try #require(model.scanRoot)
         for child in root.children where child.isDirectory {
@@ -63,11 +62,10 @@ struct LiveBranchMappingTests {
 
         let model = AppModel()
         model.isScanning = true
-        model.adoptPartial(top, session: session)
+        model.installPartial(top, session: session)
         let first = (model.scanRoot?.children ?? []).map { ($0.name, $0.physicalSize) }
 
         for _ in 0 ..< 3 { model.applyBranchTotals(from: session) }
-        model.stopLiveUpdates()
         let later = (model.scanRoot?.children ?? []).map { ($0.name, $0.physicalSize) }
 
         #expect(first.sorted { $0.0 < $1.0 }.map(\.1) == later.sorted { $0.0 < $1.0 }.map(\.1),

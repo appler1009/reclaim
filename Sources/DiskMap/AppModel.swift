@@ -69,6 +69,11 @@ final class AppModel: ObservableObject {
     /// the order `ScanSession.branchTotals()` is indexed by. The displayed
     /// children are re-sorted on every tick, so position in `scanRoot.children`
     /// says nothing about which branch a total belongs to.
+    ///
+    /// These must be the very same `FileItem` instances that `scanRoot.children`
+    /// holds — this is a second ordering of one set of objects, not a second set.
+    /// Rebuilding it with `map`, or copying the items, would write the sizes onto
+    /// objects the interface never shows.
     private var branches: [FileItem] = []
     /// Where scan history is kept. Set at construction so the load that starts
     /// immediately below reads from the right place.
@@ -367,13 +372,23 @@ final class AppModel: ObservableObject {
 
     /// Shows the first level of a running scan and starts growing its sizes from
     /// the scanner's per-branch counters.
-    func adoptPartial(_ partial: FileItem, session: ScanSession) {
+    private func adoptPartial(_ partial: FileItem, session: ScanSession) {
+        installPartial(partial, session: session)
+        startLiveUpdates(session: session)
+    }
+
+    /// Shows the first level of a running scan and applies the totals once.
+    ///
+    /// Split out from `adoptPartial` so tests can drive the ticks themselves,
+    /// through `applyBranchTotals(from:)`, without an 8 Hz timer left running
+    /// against the model — see `adoptForTesting` for the same idea.
+    func installPartial(_ partial: FileItem, session: ScanSession) {
         scanRoot = partial
         zoomRoot = partial
+        // The same objects `scanRoot.children` holds, in the scanner's order.
         branches = partial.children
         phase = .ready              // the ordinary browsing UI, mid-scan
         applyBranchTotals(from: session)
-        startLiveUpdates(session: session)
     }
 
     private func startLiveUpdates(session: ScanSession) {
@@ -390,7 +405,7 @@ final class AppModel: ObservableObject {
         liveTimer = timer
     }
 
-    func stopLiveUpdates() {
+    private func stopLiveUpdates() {
         liveTimer?.invalidate()
         liveTimer = nil
     }
