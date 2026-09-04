@@ -96,11 +96,20 @@ enum NewTab {
                      openWindow: (() -> Void)? = nil,
                      windows: (() -> [NSWindow])? = nil,
                      now: @escaping () -> Date = Date.init,
+                     schedule: ((@escaping () -> Void) -> Void)? = nil,
                      then: @escaping (NSWindow?) -> Void = { _ in }) -> Bool {
         guard let front else { return false }
         let windows = windows ?? { NSApp.windows }
         let openWindow = openWindow ?? {
             NSApp.sendAction(#selector(NSResponder.newWindowForTab(_:)), to: nil, from: nil)
+        }
+        // Every look is scheduled, the first one included, so a test can drive
+        // the whole sequence itself rather than race the clock.
+        // Named apart from the parameter it defaults, and typed rather than
+        // inferred: left to itself the compiler takes the shape of
+        // `asyncAfter`'s argument, which is not the shape a caller passes.
+        let scheduleLook: (@escaping () -> Void) -> Void = schedule ?? { work in
+            DispatchQueue.main.asyncAfter(deadline: .now() + pollInterval, execute: work)
         }
 
         let before = Set(windows().map(ObjectIdentifier.init))
@@ -139,9 +148,9 @@ enum NewTab {
                 settle(nil)
                 return
             }
-            DispatchQueue.main.asyncAfter(deadline: .now() + pollInterval) { look() }
+            scheduleLook { look() }
         }
-        DispatchQueue.main.async { look() }
+        scheduleLook { look() }
         return true
     }
 }
