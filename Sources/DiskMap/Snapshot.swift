@@ -59,6 +59,13 @@ struct Snapshot: Codable, Identifiable {
     /// The volume this target sits on, as it stood when the scan finished.
     /// Optional because snapshots written before this existed decode without it.
     let volume: VolumeSpace?
+    /// Which size this snapshot counted. A window showing logical sizes records
+    /// the files' own bytes, which cannot be set against a volume's occupied
+    /// blocks — so what was measured has to travel with the measurement.
+    /// Absent in snapshots written before this was kept; those were physical
+    /// unless somebody had changed the measure by hand, which is the app's
+    /// default and the only thing an unattended scan ever records.
+    let measure: SizeMeasure?
 
     /// Directories are kept to this depth regardless of size, so the shape of
     /// the tree survives even where it is small.
@@ -74,6 +81,7 @@ struct Snapshot: Codable, Identifiable {
         self.target = target
         self.takenAt = takenAt
         self.volume = volume
+        self.measure = measure
         self.totalBytes = root.size(measure)
         self.fileCount = root.fileCount
         self.unreadableCount = root.unreadableCount

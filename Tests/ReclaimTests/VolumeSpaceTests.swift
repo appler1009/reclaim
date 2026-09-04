@@ -92,12 +92,12 @@ struct SpaceReportTests {
     /// A scan of `target` totalling `scanned`, on a volume with `free` free.
     private func snapshot(target: String, scanned: UInt64, capacity: UInt64,
                           available: UInt64, free: UInt64, at date: Date,
-                          volume: String = "/") -> Snapshot {
+                          volume: String = "/", measure: SizeMeasure = .physical) -> Snapshot {
         let file = FileItem(name: "big.bin", isDirectory: false,
                             logicalSize: scanned, physicalSize: scanned)
         let root = FileItem(name: target, isDirectory: true, fileCount: 1, children: [file])
         root.physicalSize = scanned
-        return Snapshot(root: root, target: target, measure: .physical,
+        return Snapshot(root: root, target: target, measure: measure,
                         volume: VolumeSpace(volume: volume, capacity: capacity,
                                             available: available, free: free),
                         takenAt: date)
@@ -161,6 +161,37 @@ struct SpaceReportTests {
         #expect(report.latest.unaccounted == nil, "the two totals describe different things")
         #expect(report.latest.available == 17, "the volume's own figures still stand")
         #expect(report.summary.contains("not the whole volume"))
+    }
+
+    @Test func filesOwnSizesAreNotSetAgainstBlocksOnDisk() throws {
+        let (store, directory) = store()
+        defer { try? FileManager.default.removeItem(at: directory) }
+
+        // A window left on "Logical size" records the files' own bytes, which
+        // are not comparable with what the volume says is occupied.
+        store.record(snapshot(target: target, scanned: 201, capacity: 245,
+                              available: 17, free: 17, at: Date(), measure: .logical))
+
+        let report = try #require(DiskQueries(store: store).space(target: target, probe: quietProbe))
+        #expect(report.coversWholeVolume)
+        #expect(report.latest.unaccounted == nil, "the same rule the header strip applies")
+        #expect(report.summary.contains("size on disk"), "and it says how to get the figure")
+    }
+
+    @Test func aSnapshotFromBeforeTheMeasureWasKeptIsTakenAsBlocks() throws {
+        let (store, directory) = store()
+        defer { try? FileManager.default.removeItem(at: directory) }
+
+        let json = """
+            [{"id":"\(UUID().uuidString)","target":"/","takenAt":"2026-01-01T00:00:00Z",
+              "totalBytes":201,"fileCount":1,"unreadableCount":0,"entries":[],
+              "volume":{"volume":"/","capacity":245,"available":17,"free":17}}]
+            """
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        try Data(json.utf8).write(to: store.fileURL(forTarget: "/"))
+
+        let report = try #require(DiskQueries(store: store).space(target: "/", probe: quietProbe))
+        #expect(report.latest.unaccounted == 27, "physical is the default it was written under")
     }
 
     @Test func theSummaryNamesTheThingsSpaceHidesIn() throws {

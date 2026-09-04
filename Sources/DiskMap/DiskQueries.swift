@@ -86,9 +86,10 @@ struct DiskQueries {
         /// What the scan added up to.
         let scannedBytes: UInt64
         let scannedHuman: String
-        /// Occupied space the scan could not attribute to any folder. Nil when
-        /// the scan was of a folder rather than the whole volume, where the two
-        /// figures describe different things and subtracting them means nothing.
+        /// Occupied space the scan could not attribute to any folder. Nil
+        /// whenever the subtraction would be meaningless: a scan of a folder
+        /// rather than the whole volume, or one that counted the files' own
+        /// sizes rather than the blocks they occupy.
         let unaccounted: Int64?
         let unaccountedHuman: String?
     }
@@ -264,7 +265,10 @@ struct DiskQueries {
             let available = Int64(latest.available) - Int64(first.available)
             let used = Int64(latest.used) - Int64(first.used)
             let scanned = Int64(latest.scannedBytes) - Int64(first.scannedBytes)
-            let unaccounted = coversWholeVolume ? used - scanned : nil
+            // Only where both ends could be attributed: differencing a point
+            // that has no gap against one that does invents a movement.
+            let unaccounted = (latest.unaccounted != nil && first.unaccounted != nil)
+                ? latest.unaccounted! - first.unaccounted! : nil
             change = SpaceChange(from: first.takenAt, to: latest.takenAt,
                                  available: available, availableHuman: Self.signed(available),
                                  used: used, usedHuman: Self.signed(used),
@@ -291,7 +295,11 @@ struct DiskQueries {
 
     private static func point(for snapshot: Snapshot, coversWholeVolume: Bool) -> SpacePoint? {
         guard let volume = snapshot.volume else { return nil }
-        let unaccounted = coversWholeVolume
+        // The same rule the header strip applies: blocks can only be set
+        // against blocks. A snapshot from before the measure was recorded is
+        // taken at the app's default, which is what it will have been.
+        let countedBlocks = (snapshot.measure ?? .physical) == .physical
+        let unaccounted = coversWholeVolume && countedBlocks
             ? Int64(volume.used) - Int64(snapshot.totalBytes) : nil
         return SpacePoint(takenAt: snapshot.takenAt,
                           capacity: volume.capacity,
@@ -328,7 +336,7 @@ struct DiskQueries {
             parts.append("Free space is \(latest.availableHuman) of \(ByteFormat.string(latest.capacity)).")
         }
 
-        if coversWholeVolume {
+        if latest.unaccounted != nil {
             if let change, let unaccounted = change.unaccounted {
                 parts.append("The scanned tree moved \(change.scannedHuman) while occupied space "
                              + "moved \(change.usedHuman), leaving \(signed(unaccounted)) "
@@ -338,6 +346,10 @@ struct DiskQueries {
                 parts.append("\(ByteFormat.string(UInt64(unaccounted))) of the disk is occupied by "
                              + "something the scan cannot see.")
             }
+        } else if coversWholeVolume {
+            parts.append("The last scan counted the files' own sizes rather than the space "
+                         + "they occupy, so its total cannot be set against the volume's. "
+                         + "Scan it again showing size on disk.")
         } else {
             parts.append("The scan covered a folder, not the whole volume, so its total "
                          + "cannot be subtracted from the volume's.")

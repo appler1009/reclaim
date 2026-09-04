@@ -29,7 +29,7 @@ enum CLI {
             exit(0)
         }
         guard let index = arguments.firstIndex(of: "--scan"), index + 1 < arguments.count else { return }
-        scan(URL(fileURLWithPath: arguments[index + 1]).standardizedFileURL)
+        scan(TargetPath.normalise(URL(fileURLWithPath: arguments[index + 1])))
         exit(0)
     }
 

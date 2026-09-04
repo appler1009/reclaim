@@ -1,5 +1,16 @@
 import Foundation
 
+/// One spelling of a path, for everything that has to agree on what a target is.
+///
+/// The watchlist, the overnight claim and a snapshot's `target` are matched as
+/// strings, so they must be produced the same way: `/tmp/../tmp` and `/tmp/`
+/// are the same folder, and two of the three deciding otherwise means a night
+/// scanned twice or a claim that never matches.
+enum TargetPath {
+    static func normalise(_ url: URL) -> URL { url.standardizedFileURL }
+    static func normalise(_ path: String) -> String { normalise(URL(fileURLWithPath: path)).path }
+}
+
 /// The targets Reclaim rescans on its own, whether or not a window is showing them.
 ///
 /// A window's overnight rescan can only refresh what somebody happened to leave
@@ -34,11 +45,8 @@ final class Watchlist: ObservableObject {
         return stored.map(Self.normalise).filter { seen.insert($0).inserted }
     }
 
-    /// Trailing slashes off, symlinks left alone: this must agree with the path
-    /// a scan records as its target, which is `URL.standardizedFileURL.path`.
-    static func normalise(_ path: String) -> String {
-        URL(fileURLWithPath: path).standardizedFileURL.path
-    }
+    /// The same spelling every other part of the app uses. See `TargetPath`.
+    static func normalise(_ path: String) -> String { TargetPath.normalise(path) }
 
     func contains(_ path: String) -> Bool { targets.contains(Self.normalise(path)) }
 

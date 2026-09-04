@@ -107,6 +107,8 @@ final class AppModel: ObservableObject {
         refreshVolumes()
         refreshRecentScans()
         hasFullDiskAccess = Self.probeFullDiskAccess()
+        // So the watchlist can leave this window's own target to it.
+        ScanWindows.register(self)
         Log.info("full disk access probed", ["fullDiskAccess": "\(hasFullDiskAccess)"])
         // An unattended scan of the watchlist writes history this window knows
         // nothing about; its start screen should still show it.
@@ -299,6 +301,10 @@ final class AppModel: ObservableObject {
     }
 
     func scan(_ url: URL) {
+        // Normalised here, at the one door every scan comes through, so the
+        // path this window claims overnight and the target its snapshots are
+        // filed under are the same string the watchlist holds.
+        let url = TargetPath.normalise(url)
         session?.cancel()
         let session = ScanSession()
         self.session = session

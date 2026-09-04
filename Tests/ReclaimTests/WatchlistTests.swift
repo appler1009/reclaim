@@ -32,6 +32,20 @@ struct WatchlistTests {
         #expect(list.contains("/tmp/"))
     }
 
+    @Test func oneSpellingOfAPathIsUsedEverywhere() {
+        // The watchlist, the overnight claim and a snapshot's target are
+        // matched as strings; two of them disagreeing means a claim that never
+        // matches, or a night scanned twice.
+        let awkward = "/tmp/./sub/../"
+        #expect(Watchlist.normalise(awkward) == TargetPath.normalise(awkward))
+        #expect(TargetPath.normalise(awkward) == "/tmp")
+        #expect(TargetPath.normalise(URL(fileURLWithPath: awkward)).path == "/tmp")
+
+        let list = Watchlist(defaults: defaults())
+        list.add(awkward)
+        #expect(list.contains("/tmp"), "however it was written when it was added")
+    }
+
     @Test func togglingIsAddingOrRemoving() {
         let list = Watchlist(defaults: defaults())
         list.toggle("/tmp")
@@ -53,6 +67,7 @@ struct WatchlistRescanTests {
     /// A runner whose scans are recorded rather than performed, and whose work
     /// happens inline so a test can assert on it.
     private func runner(_ targets: [String],
+                        windowHas: @escaping (String) -> Bool = { _ in false },
                         scanned: @escaping (String) -> Void) -> WatchlistRescan {
         let defaults = UserDefaults(suiteName: "reclaim-runner-\(UUID().uuidString)")!
         let list = Watchlist(defaults: defaults)
@@ -60,6 +75,7 @@ struct WatchlistRescanTests {
         return WatchlistRescan(watchlist: list,
                                schedule: NightlyRescan(defaults: defaults),
                                scan: scanned,
+                               windowWillHandle: windowHas,
                                dispatch: { work in work() })
     }
 
@@ -82,6 +98,18 @@ struct WatchlistRescanTests {
 
         #expect(runner.runDue() == ["/tmp/two"])
         #expect(scanned == ["/tmp/two"], "no target is scanned twice in one night")
+    }
+
+    @Test func aTargetAWindowWillRefreshIsLeftToThatWindow() {
+        NightlyRescan.releaseClaims()
+        var scanned: [String] = []
+        let runner = runner(["/tmp/one", "/tmp/two"],
+                            windowHas: { $0 == "/tmp/one" }) { scanned.append($0) }
+
+        #expect(runner.runDue() == ["/tmp/two"])
+        #expect(scanned == ["/tmp/two"], "a window rescanning its own target also redraws it")
+        // And the claim was left alone, so that window can still take it.
+        #expect(NightlyRescan.claim("/tmp/one"), "the night was not quietly used up")
     }
 
     @Test func anEmptyWatchlistRunsNothingAndBooksNothing() {
@@ -111,6 +139,29 @@ struct WatchlistRescanTests {
         list.remove("/tmp/one")
         runner.armFromList()
         #expect(runner.scheduledFor == nil)
+    }
+
+    @Test func historyIsAnnouncedByWhateverWroteIt() async throws {
+        let directory = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("reclaim-unattended-\(UUID().uuidString)")
+        let scanned = directory.appendingPathComponent("tree")
+        try FileManager.default.createDirectory(at: scanned, withIntermediateDirectories: true)
+        try Data(repeating: 7, count: 4_096).write(to: scanned.appendingPathComponent("a.bin"))
+        defer { try? FileManager.default.removeItem(at: directory) }
+
+        // An agent's scan_now goes through the same helper, and the stale start
+        // screen it leaves behind is the reason the notification exists.
+        let announced = await withCheckedContinuation { continuation in
+            var token: NSObjectProtocol?
+            token = NotificationCenter.default.addObserver(
+                forName: .reclaimHistoryChanged, object: nil, queue: .main) { note in
+                    if let token { NotificationCenter.default.removeObserver(token) }
+                    continuation.resume(returning: note.userInfo?["target"] as? String)
+                }
+            UnattendedScan.run(path: scanned.path,
+                               store: SnapshotStore(directory: directory.appendingPathComponent("h")))
+        }
+        #expect(announced == scanned.path)
     }
 
     @Test func aTargetThatIsNotThereIsSkippedRatherThanRecorded() throws {

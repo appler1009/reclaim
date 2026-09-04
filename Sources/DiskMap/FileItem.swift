@@ -164,7 +164,7 @@ final class FileItem {
     }
 }
 
-enum SizeMeasure: String, CaseIterable {
+enum SizeMeasure: String, CaseIterable, Codable {
     case physical, logical
     var label: String { self == .physical ? "Size on disk" : "Logical size" }
 }

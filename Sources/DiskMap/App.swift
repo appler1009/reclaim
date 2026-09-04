@@ -48,7 +48,7 @@ private struct ScanCommands: View {
     @ObservedObject private var watchlist = Watchlist.shared
 
     /// The front window's target, when it has one to watch.
-    private var target: String? { model?.scannedURL?.standardizedFileURL.path }
+    private var target: String? { model?.scannedURL.map { TargetPath.normalise($0).path } }
 
     var body: some View {
         Group {
