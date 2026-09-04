@@ -175,9 +175,9 @@ final class AppModel: ObservableObject {
     func refreshVolumes() {
         volumeRefresh &+= 1
         let generation = volumeRefresh
-        DispatchQueue.global(qos: .userInitiated).async {
+        DispatchQueue.global(qos: .userInitiated).async { [weak self] in
             let found = VolumeScanner.mounted()
-            DispatchQueue.main.async { [weak self] in
+            DispatchQueue.main.async {
                 guard let self else { return }
                 // A mount storm can start several of these; they take as long as
                 // the slowest disk answers, so they can finish out of order.
@@ -193,9 +193,9 @@ final class AppModel: ObservableObject {
     /// Reloads the list of previously scanned targets from the history on disk.
     func refreshRecentScans() {
         let store = snapshotStore
-        DispatchQueue.global(qos: .utility).async {
+        DispatchQueue.global(qos: .utility).async { [weak self] in
             let recent = DiskQueries(store: store).targets()
-            DispatchQueue.main.async { [weak self] in self?.recentScans = recent }
+            DispatchQueue.main.async { self?.recentScans = recent }
         }
     }
 
@@ -331,16 +331,16 @@ final class AppModel: ObservableObject {
             DispatchQueue.main.async { self?.progress = snapshot }
         }
 
-        DispatchQueue.global(qos: .userInitiated).async {
+        DispatchQueue.global(qos: .userInitiated).async { [weak self] in
             let root = Scanner.scan(url: url, options: ScanOptions(), session: session) { partial in
                 // The first level, milliseconds in: show it and start growing it.
-                DispatchQueue.main.async { [weak self] in
+                DispatchQueue.main.async {
                     guard let self, self.session === session else { return }
                     self.adoptPartial(partial, session: session)
                 }
             }
             root?.warmTotals()
-            DispatchQueue.main.async { [weak self] in
+            DispatchQueue.main.async {
                 guard let self, self.session === session else { return }
                 self.stopLiveUpdates()
                 guard !session.isCancelled else {
@@ -388,12 +388,15 @@ final class AppModel: ObservableObject {
         // moment as its tree.
         let volume = VolumeSpace.read(for: URL(fileURLWithPath: target))
         comparison = store.mostRecent(forTarget: target)
+        // Built here, where the tree lives. Trashing removes nodes from it on
+        // this actor, so a background walk could be reading a folder's children
+        // as one of them goes — rare, and a crash when it happens. What goes to
+        // the background is the finished snapshot, which is a value.
+        let snapshot = Snapshot(root: root, target: target, measure: measure, volume: volume)
         // Writing history must never hold up the interface.
-        DispatchQueue.global(qos: .utility).async {
-            let snapshot = Snapshot(root: root, target: target, measure: measure,
-                                    volume: volume)
+        DispatchQueue.global(qos: .utility).async { [weak self] in
             store.record(snapshot)
-            DispatchQueue.main.async { [weak self] in self?.refreshRecentScans() }
+            DispatchQueue.main.async { self?.refreshRecentScans() }
             Log.info("snapshot recorded", ["target": target,
                                            "bytes": "\(snapshot.totalBytes)",
                                            "entries": "\(snapshot.entries.count)"])

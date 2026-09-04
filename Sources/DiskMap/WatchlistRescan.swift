@@ -83,14 +83,15 @@ enum ScanWindows {
 final class WatchlistRescan {
     private let watchlist: Watchlist
     private let schedule: NightlyRescan
-    /// Does the work. Injectable so tests never touch a disk.
-    private let scan: (String) -> Void
+    /// Does the work. Injectable so tests never touch a disk. `@Sendable`
+    /// because it is called on a background queue, not here.
+    private let scan: @Sendable (String) -> Void
     /// Whether an open window will rescan this target itself. Injectable so a
     /// test can pose as a window without building one.
     private let windowWillHandle: (String) -> Bool
     /// How work is put on a background queue. Injectable so tests can run it
     /// inline and assert on what happened.
-    private let dispatch: (@escaping () -> Void) -> Void
+    private let dispatch: (@escaping @Sendable () -> Void) -> Void
     private var observation: NSObjectProtocol?
 
     /// One at a time, on purpose: three volume scans at once thrash the disk
@@ -101,9 +102,9 @@ final class WatchlistRescan {
     /// argument is evaluated outside the actor, and both of these belong to it.
     init(watchlist: Watchlist? = nil,
          schedule: NightlyRescan? = nil,
-         scan: @escaping (String) -> Void = { UnattendedScan.run(path: $0) },
+         scan: @escaping @Sendable (String) -> Void = { UnattendedScan.run(path: $0) },
          windowWillHandle: ((String) -> Bool)? = nil,
-         dispatch: ((@escaping () -> Void) -> Void)? = nil) {
+         dispatch: ((@escaping @Sendable () -> Void) -> Void)? = nil) {
         let watchlist = watchlist ?? .shared
         let schedule = schedule ?? NightlyRescan()
         self.watchlist = watchlist
@@ -157,10 +158,13 @@ final class WatchlistRescan {
         guard !taken.isEmpty else { return [] }
 
         let scan = self.scan
+        // Copied out of the mutable local: what crosses to the queue has to be
+        // a value the queue owns.
+        let due = taken
         dispatch {
             // One at a time, and each announces itself as it lands, so a window
             // showing the first target does not wait on the last.
-            for target in taken { scan(target) }
+            for target in due { scan(target) }
         }
         Log.info("watchlist rescan started", ["targets": taken.joined(separator: ", ")])
         return taken
