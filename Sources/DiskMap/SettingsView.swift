@@ -156,9 +156,16 @@ private struct WatchedRow: View {
 
 private extension View {
     /// The explanatory small print under a settings section.
+    ///
+    /// Pushed left on purpose: a grouped `Form` puts a footer in the trailing
+    /// value column, where a paragraph comes out ragged-left against the right
+    /// edge and reads as though it belongs to whatever control sits above it.
+    /// Prose in this window starts at the same margin as everything else.
     func settingsFootnote() -> some View {
         font(.callout)
             .foregroundStyle(.secondary)
+            .multilineTextAlignment(.leading)
             .fixedSize(horizontal: false, vertical: true)
+            .frame(maxWidth: .infinity, alignment: .leading)
     }
 }
