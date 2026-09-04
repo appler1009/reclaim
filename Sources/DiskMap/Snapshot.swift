@@ -75,34 +75,74 @@ struct Snapshot: Codable, Identifiable {
     static let significantFraction = 0.001
     static let maximumEntries = 2_000
 
-    init(root: FileItem, target: String, measure: SizeMeasure,
-         volume: VolumeSpace? = nil, takenAt: Date = Date()) {
-        self.id = UUID()
-        self.target = target
-        self.takenAt = takenAt
-        self.volume = volume
-        self.measure = measure
-        self.totalBytes = root.size(measure)
-        self.fileCount = root.fileCount
-        self.unreadableCount = root.unreadableCount
+    /// What a scan held, before it was shaped into a snapshot.
+    ///
+    /// Collecting has to happen where the tree lives: `FileItem` is a class,
+    /// and trashing removes nodes from it on the main actor. Sorting and
+    /// capping are work on a value and belong anywhere but there, so the two
+    /// halves are separate and only the first is tied to the actor.
+    struct Draft {
+        let target: String
+        let totalBytes: UInt64
+        let fileCount: Int
+        let unreadableCount: Int
+        /// In the order the walk found them, largest not yet first.
+        let collected: [Entry]
+    }
 
+    /// Walks the tree. Call this where the tree is owned.
+    static func draft(root: FileItem, target: String, measure: SizeMeasure) -> Draft {
+        let totalBytes = root.size(measure)
         let threshold = UInt64(Double(totalBytes) * Self.significantFraction)
+        // The root's name is an absolute path, and everything below is a
+        // component appended to it — the same rule `FileItem.path` follows.
+        var prefix = root.name
+        if prefix.hasSuffix("/") { prefix.removeLast() }
+
         var collected: [Entry] = []
-        var stack: [(node: FileItem, depth: Int)] = [(root, 0)]
-        while let (node, depth) = stack.popLast() {
+        var stack: [(node: FileItem, path: String, depth: Int)] = [(root, prefix, 0)]
+        while let (node, path, depth) = stack.popLast() {
             for child in node.children {
                 let bytes = child.size(measure)
                 guard bytes > 0 else { continue }
                 let worthKeeping = depth < Self.alwaysKeepDepth || bytes >= threshold
                 guard worthKeeping else { continue }
-                collected.append(Entry(path: child.path, bytes: bytes,
+                // Threaded down the walk rather than asked of the child:
+                // `FileItem.path` climbs the parent chain and joins it afresh
+                // every time, which is the same string rebuilt at every level
+                // of a walk that already knows it.
+                let childPath = path + "/" + child.name
+                collected.append(Entry(path: childPath, bytes: bytes,
                                        isDirectory: child.isDirectory))
-                if child.isDirectory { stack.append((child, depth + 1)) }
+                if child.isDirectory { stack.append((child, childPath, depth + 1)) }
             }
         }
+        return Draft(target: target, totalBytes: totalBytes, fileCount: root.fileCount,
+                     unreadableCount: root.unreadableCount, collected: collected)
+    }
+
+    /// Shapes a draft into what gets stored. Pure work on values: run it off
+    /// the interface's back.
+    init(draft: Draft, measure: SizeMeasure, volume: VolumeSpace? = nil,
+         takenAt: Date = Date()) {
+        self.id = UUID()
+        self.target = draft.target
+        self.takenAt = takenAt
+        self.volume = volume
+        self.measure = measure
+        self.totalBytes = draft.totalBytes
+        self.fileCount = draft.fileCount
+        self.unreadableCount = draft.unreadableCount
         // Largest first, then capped: what is dropped is what matters least.
-        collected.sort { $0.bytes > $1.bytes }
-        self.entries = Array(collected.prefix(Self.maximumEntries))
+        self.entries = Array(draft.collected.sorted { $0.bytes > $1.bytes }
+            .prefix(Self.maximumEntries))
+    }
+
+    /// Both halves at once, for a caller with no interface to hold up.
+    init(root: FileItem, target: String, measure: SizeMeasure,
+         volume: VolumeSpace? = nil, takenAt: Date = Date()) {
+        self.init(draft: Self.draft(root: root, target: target, measure: measure),
+                  measure: measure, volume: volume, takenAt: takenAt)
     }
 
     /// Size recorded for a path, if this snapshot kept it.

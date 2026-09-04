@@ -61,6 +61,14 @@ struct WatchlistTests {
     }
 }
 
+/// Collects what the runner asked for. A class because the scan hook is
+/// `@Sendable` now; these tests drive it inline, so there is no real
+/// concurrency for it to guard against.
+private final class Recorder: @unchecked Sendable {
+    private(set) var targets: [String] = []
+    func record(_ target: String) { targets.append(target) }
+}
+
 @MainActor
 @Suite("Watchlist rescan")
 struct WatchlistRescanTests {
@@ -68,7 +76,7 @@ struct WatchlistRescanTests {
     /// happens inline so a test can assert on it.
     private func runner(_ targets: [String],
                         windowHas: @escaping (String) -> Bool = { _ in false },
-                        scanned: @escaping (String) -> Void) -> WatchlistRescan {
+                        scanned: @escaping @Sendable (String) -> Void) -> WatchlistRescan {
         let defaults = UserDefaults(suiteName: "reclaim-runner-\(UUID().uuidString)")!
         let list = Watchlist(defaults: defaults)
         for target in targets { list.add(target) }
@@ -81,43 +89,43 @@ struct WatchlistRescanTests {
 
     @Test func everyWatchedTargetIsScannedInTurn() {
         NightlyRescan.releaseClaims()
-        var scanned: [String] = []
-        let runner = runner(["/tmp/one", "/tmp/two"]) { scanned.append($0) }
+        let scanned = Recorder()
+        let runner = runner(["/tmp/one", "/tmp/two"]) { scanned.record($0) }
 
         let taken = runner.runDue()
         #expect(taken == ["/tmp/one", "/tmp/two"])
-        #expect(scanned == ["/tmp/one", "/tmp/two"], "one after another, in list order")
+        #expect(scanned.targets == ["/tmp/one", "/tmp/two"], "one after another, in list order")
     }
 
     @Test func aTargetAWindowAlreadyTookIsLeftAlone() {
         NightlyRescan.releaseClaims()
-        var scanned: [String] = []
-        let runner = runner(["/tmp/one", "/tmp/two"]) { scanned.append($0) }
+        let scanned = Recorder()
+        let runner = runner(["/tmp/one", "/tmp/two"]) { scanned.record($0) }
         // A window showing /tmp/one got to it first tonight.
         #expect(NightlyRescan.claim("/tmp/one"))
 
         #expect(runner.runDue() == ["/tmp/two"])
-        #expect(scanned == ["/tmp/two"], "no target is scanned twice in one night")
+        #expect(scanned.targets == ["/tmp/two"], "no target is scanned twice in one night")
     }
 
     @Test func aTargetAWindowWillRefreshIsLeftToThatWindow() {
         NightlyRescan.releaseClaims()
-        var scanned: [String] = []
+        let scanned = Recorder()
         let runner = runner(["/tmp/one", "/tmp/two"],
-                            windowHas: { $0 == "/tmp/one" }) { scanned.append($0) }
+                            windowHas: { $0 == "/tmp/one" }) { scanned.record($0) }
 
         #expect(runner.runDue() == ["/tmp/two"])
-        #expect(scanned == ["/tmp/two"], "a window rescanning its own target also redraws it")
+        #expect(scanned.targets == ["/tmp/two"], "a window rescanning its own target also redraws it")
         // And the claim was left alone, so that window can still take it.
         #expect(NightlyRescan.claim("/tmp/one"), "the night was not quietly used up")
     }
 
     @Test func anEmptyWatchlistRunsNothingAndBooksNothing() {
         NightlyRescan.releaseClaims()
-        var scanned: [String] = []
-        let runner = runner([]) { scanned.append($0) }
+        let scanned = Recorder()
+        let runner = runner([]) { scanned.record($0) }
         #expect(runner.runDue().isEmpty)
-        #expect(scanned.isEmpty)
+        #expect(scanned.targets.isEmpty)
         #expect(runner.scheduledFor == nil, "nothing to do, so nothing on the clock")
     }
 
@@ -151,11 +159,14 @@ struct WatchlistRescanTests {
 
         // An agent's scan_now goes through the same helper, and the stale start
         // screen it leaves behind is the reason the notification exists.
+        // The observer has to unregister itself from inside its own block, so
+        // the token lives somewhere both can reach.
+        final class Token: @unchecked Sendable { var value: NSObjectProtocol? }
+        let token = Token()
         let announced = await withCheckedContinuation { continuation in
-            var token: NSObjectProtocol?
-            token = NotificationCenter.default.addObserver(
+            token.value = NotificationCenter.default.addObserver(
                 forName: .reclaimHistoryChanged, object: nil, queue: .main) { note in
-                    if let token { NotificationCenter.default.removeObserver(token) }
+                    if let observer = token.value { NotificationCenter.default.removeObserver(observer) }
                     continuation.resume(returning: note.userInfo?["target"] as? String)
                 }
             UnattendedScan.run(path: scanned.path,

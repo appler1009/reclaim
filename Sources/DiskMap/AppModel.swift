@@ -175,9 +175,9 @@ final class AppModel: ObservableObject {
     func refreshVolumes() {
         volumeRefresh &+= 1
         let generation = volumeRefresh
-        DispatchQueue.global(qos: .userInitiated).async {
+        DispatchQueue.global(qos: .userInitiated).async { [weak self] in
             let found = VolumeScanner.mounted()
-            DispatchQueue.main.async { [weak self] in
+            DispatchQueue.main.async {
                 guard let self else { return }
                 // A mount storm can start several of these; they take as long as
                 // the slowest disk answers, so they can finish out of order.
@@ -193,9 +193,9 @@ final class AppModel: ObservableObject {
     /// Reloads the list of previously scanned targets from the history on disk.
     func refreshRecentScans() {
         let store = snapshotStore
-        DispatchQueue.global(qos: .utility).async {
+        DispatchQueue.global(qos: .utility).async { [weak self] in
             let recent = DiskQueries(store: store).targets()
-            DispatchQueue.main.async { [weak self] in self?.recentScans = recent }
+            DispatchQueue.main.async { self?.recentScans = recent }
         }
     }
 
@@ -331,7 +331,12 @@ final class AppModel: ObservableObject {
             DispatchQueue.main.async { self?.progress = snapshot }
         }
 
-        DispatchQueue.global(qos: .userInitiated).async {
+        // Held strongly, deliberately, for as long as the scan runs: a window
+        // closed near the end of a ten-minute volume walk should still file
+        // what the walk found, and the model is what files it. The hops back
+        // onto the actor take a weak reference, since by then the work is done
+        // and there is nothing left to save.
+        DispatchQueue.global(qos: .userInitiated).async { [self] in
             let root = Scanner.scan(url: url, options: ScanOptions(), session: session) { partial in
                 // The first level, milliseconds in: show it and start growing it.
                 DispatchQueue.main.async { [weak self] in
@@ -388,12 +393,16 @@ final class AppModel: ObservableObject {
         // moment as its tree.
         let volume = VolumeSpace.read(for: URL(fileURLWithPath: target))
         comparison = store.mostRecent(forTarget: target)
-        // Writing history must never hold up the interface.
-        DispatchQueue.global(qos: .utility).async {
-            let snapshot = Snapshot(root: root, target: target, measure: measure,
-                                    volume: volume)
+        // Collected here, where the tree lives: trashing removes nodes from it
+        // on this actor, so a walk elsewhere could be reading a folder's
+        // children as one of them goes — rare, and a crash when it happens.
+        // Only the walk is owed to this actor; what crosses is a value.
+        let draft = Snapshot.draft(root: root, target: target, measure: measure)
+        // Shaping and writing history must never hold up the interface.
+        DispatchQueue.global(qos: .utility).async { [weak self] in
+            let snapshot = Snapshot(draft: draft, measure: measure, volume: volume)
             store.record(snapshot)
-            DispatchQueue.main.async { [weak self] in self?.refreshRecentScans() }
+            DispatchQueue.main.async { self?.refreshRecentScans() }
             Log.info("snapshot recorded", ["target": target,
                                            "bytes": "\(snapshot.totalBytes)",
                                            "entries": "\(snapshot.entries.count)"])

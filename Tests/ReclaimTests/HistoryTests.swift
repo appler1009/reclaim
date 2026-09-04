@@ -34,6 +34,41 @@ struct SnapshotTests {
         #expect(snapshot.bytes(forPath: "/tmp/history/gone") == nil)
     }
 
+    @Test func pathsAreTheSameWhetherThreadedOrClimbed() {
+        // The walk builds each path from its parent's rather than asking the
+        // node, which climbs the parent chain and rejoins it every time. The
+        // two must not drift, so compare them on the same tree.
+        let snapshot = Snapshot(root: tree(), target: "/tmp/history", measure: .physical)
+        var expected: [String: UInt64] = [:]
+        func visit(_ node: FileItem) {
+            for child in node.children {
+                expected[child.path] = child.size(.physical)
+                visit(child)
+            }
+        }
+        visit(tree())
+        for entry in snapshot.entries {
+            #expect(expected[entry.path] == entry.bytes, "\(entry.path) is not where the tree says")
+        }
+        #expect(snapshot.entries.count == expected.count)
+    }
+
+    @Test func aVolumeRootDoesNotDoubleItsSlash() {
+        // The root's name is an absolute path; "/" is the case that turns into
+        // "//Users" if the join is naive.
+        let users = FileItem(name: "Users", isDirectory: true,
+                             children: [FileItem(name: "a.bin", isDirectory: false,
+                                                 logicalSize: 4_000, physicalSize: 4_000)])
+        users.physicalSize = 4_000
+        let root = FileItem(name: "/", isDirectory: true, fileCount: 1, children: [users])
+        root.physicalSize = 4_000
+
+        let paths = Snapshot(root: root, target: "/", measure: .physical).entries.map(\.path)
+        #expect(paths.contains("/Users"))
+        #expect(paths.contains("/Users/a.bin"))
+        #expect(!paths.contains { $0.hasPrefix("//") })
+    }
+
     @Test func aHugeTreeStaysASmallSnapshot() {
         // A directory of ten thousand small files must not become a huge record.
         let children = (0 ..< 10_000).map { index -> FileItem in
