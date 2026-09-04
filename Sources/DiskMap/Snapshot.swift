@@ -1,5 +1,41 @@
 import Foundation
 
+/// The state of the volume a target sits on, at the moment a scan finished.
+///
+/// Kept with the scan because it is the only way to answer "the disk lost 14 GB
+/// — where did it go?". A scanned tree can be flat while the volume fills up,
+/// and that gap is itself the finding: local snapshots, purgeable caches and
+/// anything the scan could not read all take real blocks that no walk of the
+/// filesystem will ever attribute to a folder.
+struct VolumeSpace: Codable, Equatable {
+    /// Mount point of the volume — "/" or "/Volumes/500GB SSD".
+    let volume: String
+    let capacity: UInt64
+    /// Free space as macOS reports it for important usage: it counts space the
+    /// system would purge if pressed, so it reads higher than what is free now.
+    /// This is the number Finder shows, and the one a person quotes.
+    let available: UInt64
+    /// Free space without that promise.
+    let free: UInt64
+
+    /// Blocks actually occupied, purgeable content included — the figure to
+    /// compare a scanned tree against.
+    var used: UInt64 { capacity > free ? capacity - free : 0 }
+    /// What the system is holding but would give back under pressure. Where
+    /// local Time Machine snapshots sit.
+    var purgeable: UInt64 { available > free ? available - free : 0 }
+
+    /// Whether `target` is the whole volume, which is the only case where the
+    /// scanned total and the volume's own figures describe the same thing.
+    func covers(target: String) -> Bool {
+        let volume = self.volume.hasSuffix("/") && self.volume.count > 1
+            ? String(self.volume.dropLast()) : self.volume
+        let target = target.hasSuffix("/") && target.count > 1
+            ? String(target.dropLast()) : target
+        return volume == target
+    }
+}
+
 /// What a finished scan looked like, small enough to keep many of.
 ///
 /// A full tree is hundreds of thousands of nodes; a snapshot keeps the parts
@@ -20,6 +56,16 @@ struct Snapshot: Codable, Identifiable {
     let fileCount: Int
     let unreadableCount: Int
     let entries: [Entry]
+    /// The volume this target sits on, as it stood when the scan finished.
+    /// Optional because snapshots written before this existed decode without it.
+    let volume: VolumeSpace?
+    /// Which size this snapshot counted. A window showing logical sizes records
+    /// the files' own bytes, which cannot be set against a volume's occupied
+    /// blocks — so what was measured has to travel with the measurement.
+    /// Absent in snapshots written before this was kept; those were physical
+    /// unless somebody had changed the measure by hand, which is the app's
+    /// default and the only thing an unattended scan ever records.
+    let measure: SizeMeasure?
 
     /// Directories are kept to this depth regardless of size, so the shape of
     /// the tree survives even where it is small.
@@ -29,10 +75,13 @@ struct Snapshot: Codable, Identifiable {
     static let significantFraction = 0.001
     static let maximumEntries = 2_000
 
-    init(root: FileItem, target: String, measure: SizeMeasure, takenAt: Date = Date()) {
+    init(root: FileItem, target: String, measure: SizeMeasure,
+         volume: VolumeSpace? = nil, takenAt: Date = Date()) {
         self.id = UUID()
         self.target = target
         self.takenAt = takenAt
+        self.volume = volume
+        self.measure = measure
         self.totalBytes = root.size(measure)
         self.fileCount = root.fileCount
         self.unreadableCount = root.unreadableCount

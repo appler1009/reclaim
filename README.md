@@ -33,6 +33,9 @@ as a single level of tiles, each sized by the space it takes:
 - **It remembers.** Every scan is recorded, so the next one can say what changed:
   `+25.0 MB` appears beside the folder that grew. History survives quitting, and the
   start screen lists what you scanned before.
+- **It can keep watching.** Add a disk or folder to the watchlist in Settings and
+  Reclaim rescans it overnight with no window open, so history gains a point a night
+  and there is something to compare against. It runs only while Reclaim is running.
 - **Deleting is yours to start.** Tick anything in the list, or right-click a tile, and
   it goes to the **Trash** — `FileManager.trashItem`, never an outright delete. The
   button says how much it will move, the header shows what is in the Trash, and you can
@@ -50,8 +53,8 @@ screenshots:
 claude mcp add --transport http reclaim http://127.0.0.1:8739/mcp
 ```
 
-`list_targets`, `disk_usage`, `largest_items`, `growth`, `scan_history`, and `scan_now`
-for a folder with no history yet. The address is also on the File menu.
+`list_targets`, `disk_usage`, `largest_items`, `growth`, `volume_space` for space no
+scan can account for, `scan_history`, and `scan_now` for a folder with no history yet. The address is also on the File menu.
 
 ```
 growth → total: +25.0 MB

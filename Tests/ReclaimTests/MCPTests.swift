@@ -164,7 +164,8 @@ struct MCPEndpointTests {
         let tools = try #require(result["tools"] as? [[String: Any]])
         let names = tools.compactMap { $0["name"] as? String }
         #expect(names.sorted() == ["disk_usage", "growth", "largest_items",
-                                   "list_targets", "scan_history", "scan_now"])
+                                   "list_targets", "scan_history", "scan_now",
+                                   "volume_space"])
         for tool in tools {
             #expect((tool["description"] as? String)?.isEmpty == false)
             #expect(tool["inputSchema"] is [String: Any])
@@ -289,7 +290,7 @@ struct MCPServerTests {
 
         let list = try post(port, ["jsonrpc": "2.0", "id": 2, "method": "tools/list"])
         let tools = (list?["result"] as? [String: Any])?["tools"] as? [[String: Any]]
-        #expect(tools?.count == 6)
+        #expect(tools?.count == 7)
 
         // And a real question, answered from the recorded history.
         let call = try post(port, ["jsonrpc": "2.0", "id": 3, "method": "tools/call",

@@ -92,6 +92,28 @@ struct MCPEndpoint {
             ],
         ],
         [
+            "name": "volume_space",
+            "description": """
+                Where a volume's space went, including the space no scan can \
+                account for. Reports free and occupied space at every recorded \
+                scan of a target, what the scan itself added up to, and the \
+                difference — then reads local Time Machine snapshots and the \
+                Trash live, which is usually what explains a drop in free space \
+                that no folder accounts for. Use this when the disk shrank but \
+                `growth` shows nothing big.
+                """,
+            "inputSchema": [
+                "type": "object",
+                "properties": [
+                    "target": ["type": "string", "description": "A target from list_targets."],
+                    "since": ["type": "string",
+                              "description": "ISO 8601 timestamp to compare against. "
+                                  + "Without it, the oldest scan on record."],
+                ],
+                "required": ["target"],
+            ],
+        ],
+        [
             "name": "scan_now",
             "description": """
                 Scan a path right now and record the result, then return its totals. \
@@ -200,6 +222,16 @@ struct MCPEndpoint {
             }
             return try Self.toolJSON(growth)
 
+        case "volume_space":
+            let target = try requiredString("target")
+            let since = (arguments["since"] as? String).flatMap(Self.parseDate)
+            guard let report = queries.space(target: target, since: since) else {
+                throw ToolError(message: "No scan of \(target) carries volume figures. "
+                                + "Scans recorded before Reclaim started keeping them, and "
+                                + "targets never scanned, both look like this — scan it again.")
+            }
+            return try Self.toolJSON(report)
+
         case "scan_history":
             let target = try requiredString("target")
             let history = queries.history(target: target)
@@ -223,20 +255,15 @@ struct MCPEndpoint {
 
     /// Scans a path for real and files the result into history.
     static func liveScan(_ path: String) -> DiskQueries.TargetSummary? {
-        let url = URL(fileURLWithPath: path)
-        let session = ScanSession()
-        guard let root = Scanner.scan(url: url, options: ScanOptions(), session: session) else {
-            return nil
-        }
-        let snapshot = Snapshot(root: root, target: url.path, measure: .physical)
-        SnapshotStore().record(snapshot)
-        return DiskQueries.TargetSummary(target: url.path,
+        let store = SnapshotStore()
+        guard let snapshot = UnattendedScan.run(path: path, store: store) else { return nil }
+        return DiskQueries.TargetSummary(target: snapshot.target,
                                          lastScan: snapshot.takenAt,
                                          totalBytes: snapshot.totalBytes,
                                          totalHuman: ByteFormat.string(snapshot.totalBytes),
                                          fileCount: snapshot.fileCount,
                                          unreadableCount: snapshot.unreadableCount,
-                                         scanCount: SnapshotStore().snapshots(forTarget: url.path).count)
+                                         scanCount: store.snapshots(forTarget: snapshot.target).count)
     }
 
     // MARK: - JSON-RPC shapes
