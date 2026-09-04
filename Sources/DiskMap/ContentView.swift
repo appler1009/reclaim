@@ -55,7 +55,7 @@ struct ContentView: View {
         // menu when several scans are open.
         .navigationTitle(windowTitle)
         .navigationSubtitle(windowSubtitle)
-        .background(WindowTabTitle(title: windowTitle))
+        .background(WindowTabTitle(title: windowTitle) { model.window = $0 })
         // Points the menu bar at this window while it is in front.
         .focusedSceneValue(\.scan, model)
         .preferredColorScheme(.dark)

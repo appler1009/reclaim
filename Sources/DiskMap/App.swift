@@ -28,6 +28,8 @@ struct DiskMapApp: App {
             // Kept after .newItem rather than replacing it, so New Window (⌘N)
             // survives: a window is a scan, and opening another is the point.
             CommandGroup(after: .newItem) {
+                NewTabCommand()
+                Divider()
                 ScanCommands()
             }
             CommandGroup(after: .sidebar) {
@@ -38,6 +40,109 @@ struct DiskMapApp: App {
         Settings {
             SettingsView()
         }
+    }
+}
+
+/// Opens another scan in a tab of the window in front.
+///
+/// The tab bar already offers this through its "+", and a window can be torn
+/// into its own; the File menu was the one place that only offered a whole new
+/// window.
+///
+/// Asking AppKit for the new window is the easy half. Whether it *joins* the
+/// front one is decided by that window's `tabbingMode`, which by default defers
+/// to the system's "Prefer tabs when opening documents" — set to "full screen
+/// only" on a stock Mac, so the action alone opens a window and leaves it
+/// standing beside the one it came from. A menu item called New Tab has to make
+/// a tab whatever that setting says, so the window it produces is put into the
+/// front window's tab group by hand.
+private struct NewTabCommand: View {
+    /// Only to know whether a scan window is in front. Read the same way the
+    /// other File-menu items read it, so it tracks focus rather than being
+    /// decided once when the menu is built.
+    @FocusedValue(\.scan) private var model
+
+    var body: some View {
+        // The scan's own window, not whatever is key when the item is picked:
+        // focus and key window can disagree — Settings in front is the case —
+        // and then the tab would join the wrong window, or none. Key window is
+        // the fallback for the moment before a new window has reported itself.
+        Button("New Tab") { NewTab.open(front: model?.window ?? NSApp.keyWindow) }
+            .keyboardShortcut("t", modifiers: .command)
+            // Enablement stays on the focused scan rather than on its window:
+            // `window` is not a published property — publishing an `NSWindow`
+            // from a model that the window itself owns invites a cycle — so a
+            // menu built before it was reported would never enable.
+            .disabled(model == nil)
+    }
+}
+
+@MainActor
+enum NewTab {
+    /// How long to keep asking for the window the action was supposed to make.
+    /// A scene is built after `newWindowForTab:` returns, and not always by the
+    /// next turn of the run loop, so the window is watched for rather than
+    /// assumed to be there.
+    static let patience: TimeInterval = 1
+    static let pollInterval: TimeInterval = 0.05
+
+    /// Opens a scan window and makes it a tab of `front`.
+    ///
+    /// Every collaborator is a parameter so the whole sequence — including the
+    /// window arriving late — can be exercised without a menu or a scene.
+    /// Returns whether it had a window to tab onto at all.
+    @discardableResult
+    static func open(front: NSWindow?,
+                     openWindow: (() -> Void)? = nil,
+                     windows: (() -> [NSWindow])? = nil,
+                     now: @escaping () -> Date = Date.init,
+                     then: @escaping (NSWindow?) -> Void = { _ in }) -> Bool {
+        guard let front else { return false }
+        let windows = windows ?? { NSApp.windows }
+        let openWindow = openWindow ?? {
+            NSApp.sendAction(#selector(NSResponder.newWindowForTab(_:)), to: nil, from: nil)
+        }
+
+        let before = Set(windows().map(ObjectIdentifier.init))
+        // Asking for a tab rather than a window, and held that way until the
+        // window turns up: put back early, AppKit would fall back to the
+        // system's "Prefer tabs" setting for a scene that arrives late, which
+        // on a stock Mac means a window standing beside this one.
+        let mode = front.tabbingMode
+        front.tabbingMode = .preferred
+        openWindow()
+
+        let deadline = now().addingTimeInterval(patience)
+        func settle(_ created: NSWindow?) {
+            front.tabbingMode = mode
+            then(created)
+        }
+        func look() {
+            // Same tabbing identifier: a window of the same scene, rather than
+            // the settings pane or a panel that happened to appear.
+            let created = windows().first {
+                !before.contains(ObjectIdentifier($0))
+                    && $0.tabbingIdentifier == front.tabbingIdentifier
+            }
+            if let created {
+                // Already tabbed where the system prefers tabs; AppKit got
+                // there first and there is nothing to join.
+                if front.tabGroup?.windows.contains(created) != true {
+                    front.addTabbedWindow(created, ordered: .above)
+                }
+                created.makeKeyAndOrderFront(nil)
+                settle(created)
+                return
+            }
+            guard now() < deadline else {
+                Log.warning("new tab: no window arrived", ["waited": "\(patience)s"])
+                settle(nil)
+                return
+            }
+            DispatchQueue.main.asyncAfter(deadline: .now() + pollInterval) { look() }
+        }
+        DispatchQueue.main.async { look() }
+        return true
     }
 }
 
