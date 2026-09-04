@@ -47,9 +47,15 @@ struct DiskMapApp: App {
 ///
 /// The tab bar already offers this through its "+", and a window can be torn
 /// into its own; the File menu was the one place that only offered a whole new
-/// window. Sent up the responder chain rather than called on a window we picked
-/// ourselves: the chain knows which window is frontmost, and AppKit is what
-/// makes a tab out of a scene.
+/// window.
+///
+/// Asking AppKit for the new window is the easy half. Whether it *joins* the
+/// front one is decided by that window's `tabbingMode`, which by default defers
+/// to the system's "Prefer tabs when opening documents" — set to "full screen
+/// only" on a stock Mac, so the action alone opens a window and leaves it
+/// standing beside the one it came from. A menu item called New Tab has to make
+/// a tab whatever that setting says, so the window it produces is put into the
+/// front window's tab group by hand.
 private struct NewTabCommand: View {
     /// Only to know whether a scan window is in front. Read the same way the
     /// other File-menu items read it, so it tracks focus rather than being
@@ -57,13 +63,56 @@ private struct NewTabCommand: View {
     @FocusedValue(\.scan) private var model
 
     var body: some View {
-        Button("New Tab") {
+        Button("New Tab") { NewTab.open() }
+            .keyboardShortcut("t", modifiers: .command)
+            // Nothing to add a tab to when no scan window is in front, and the
+            // menu should say so rather than doing nothing when picked.
+            .disabled(model == nil)
+    }
+}
+
+@MainActor
+enum NewTab {
+    /// Opens a scan window and makes it a tab of the one in front.
+    ///
+    /// Split out from the menu item so it can be exercised without one.
+    /// Returns the window it tabbed, for the same reason.
+    @discardableResult
+    static func open(front: NSWindow? = nil,
+                     openWindow: (() -> Void)? = nil,
+                     windows: (() -> [NSWindow])? = nil,
+                     then: @escaping (NSWindow?) -> Void = { _ in }) -> Bool {
+        // Resolved here rather than in the signature: a default argument is
+        // evaluated outside the actor these belong to.
+        guard let front = front ?? NSApp.keyWindow else { return false }
+        let windows = windows ?? { NSApp.windows }
+        let openWindow = openWindow ?? {
             NSApp.sendAction(#selector(NSResponder.newWindowForTab(_:)), to: nil, from: nil)
         }
-        .keyboardShortcut("t", modifiers: .command)
-        // Nothing to add a tab to when no scan window is in front, and the
-        // menu should say so rather than doing nothing when picked.
-        .disabled(model == nil)
+        let before = Set(windows().map(ObjectIdentifier.init))
+        // Asking for a tab rather than a window, for the length of this action:
+        // where the system does prefer tabs, AppKit tabs it itself and the
+        // reconciliation below finds nothing to do.
+        let mode = front.tabbingMode
+        front.tabbingMode = .preferred
+        openWindow()
+        // The scene is built after this returns, so the new window is looked
+        // for — and the borrowed tabbing mode given back — on the next turn.
+        DispatchQueue.main.async {
+            front.tabbingMode = mode
+            // Same tabbing identifier: a window of the same scene, rather than
+            // the settings pane or a panel that happened to appear.
+            let created = windows().first {
+                !before.contains(ObjectIdentifier($0)) && $0.isVisible
+                    && $0.tabbingIdentifier == front.tabbingIdentifier
+            }
+            if let created, front.tabGroup?.windows.contains(created) != true {
+                front.addTabbedWindow(created, ordered: .above)
+                created.makeKeyAndOrderFront(nil)
+            }
+            then(created)
+        }
+        return true
     }
 }
 
