@@ -44,6 +44,11 @@ struct DiskMapApp: App {
 /// File-menu entries, acting on whichever scan window is in front.
 private struct ScanCommands: View {
     @FocusedValue(\.scan) private var model
+    /// Observed, not read once: the menu item's wording flips with the list.
+    @ObservedObject private var watchlist = Watchlist.shared
+
+    /// The front window's target, when it has one to watch.
+    private var target: String? { model?.scannedURL?.standardizedFileURL.path }
 
     var body: some View {
         Group {
@@ -78,6 +83,11 @@ private struct ScanCommands: View {
                 .keyboardShortcut(".", modifiers: .command)
                 .disabled(model?.isScanning != true)
 
+            Button(watchTitle) {
+                if let target { watchlist.toggle(target) }
+            }
+            .disabled(target == nil)
+
             Divider()
 
             Button("Reveal in Finder") {
@@ -91,6 +101,17 @@ private struct ScanCommands: View {
             Button("Open Trash") { model?.revealTrashInFinder() }
                 .disabled((model?.trash.items ?? 0) == 0)
         }
+    }
+}
+
+private extension ScanCommands {
+    /// Says what the item will do, and to what: a menu that reads "Watch
+    /// Overnight" with three windows open is asking which one.
+    var watchTitle: String {
+        guard let target else { return "Watch Overnight" }
+        let name = URL(fileURLWithPath: target).lastPathComponent
+        let subject = name.isEmpty ? "Startup Disk" : name
+        return watchlist.contains(target) ? "Stop Watching \(subject)" : "Watch \(subject) Overnight"
     }
 }
 
@@ -109,6 +130,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var sizeGuard: WindowSizeGuard?
     /// Lets local agents ask what is on the disk. See MCPServer.
     private let mcp = MCPServer()
+    /// Rescans the watchlist overnight. Owned by the app rather than a window,
+    /// which is the whole point: it runs with nothing open.
+    private var watchlist: WatchlistRescan?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApp.setActivationPolicy(.regular)
@@ -119,6 +143,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         } catch {
             Log.error("could not start mcp server", ["error": error.localizedDescription])
         }
+        watchlist = WatchlistRescan()
         styleWindows()
         sizeGuard = WindowSizeGuard(defaultSize: NSSize(width: 1320, height: 860))
     }

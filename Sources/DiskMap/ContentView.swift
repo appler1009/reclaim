@@ -1086,13 +1086,16 @@ private struct ChangeChip: View {
 /// target was last measured at.
 private struct RecentScans: View {
     @ObservedObject var model: AppModel
+    /// Only to mark the watched ones. The list is edited in Settings, not here:
+    /// the start screen is for choosing what to scan now.
+    @ObservedObject private var watchlist = Watchlist.shared
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
             Overline(text: "Scanned before")
             VStack(spacing: 2) {
                 ForEach(model.recentScans.prefix(6), id: \.target) { scan in
-                    RecentScanRow(scan: scan) {
+                    RecentScanRow(scan: scan, isWatched: watchlist.contains(scan.target)) {
                         model.scan(URL(fileURLWithPath: scan.target))
                     }
                 }
@@ -1104,6 +1107,9 @@ private struct RecentScans: View {
 
 private struct RecentScanRow: View {
     let scan: DiskQueries.TargetSummary
+    /// Whether this refreshes itself overnight, which is why its numbers can be
+    /// newer than the last time anyone opened it.
+    var isWatched = false
     let action: () -> Void
     @State private var hovering = false
 
@@ -1123,6 +1129,12 @@ private struct RecentScanRow: View {
                         .lineLimit(1).truncationMode(.middle)
                 }
                 Spacer(minLength: 8)
+                if isWatched {
+                    Image(systemName: "moon.stars.fill")
+                        .font(.system(size: 10))
+                        .foregroundStyle(Color.ember.opacity(0.75))
+                        .help("Watched: rescanned overnight without a window open")
+                }
                 Text(scan.totalHuman)
                     .font(.system(size: 12, weight: .semibold)).monospacedDigit()
                     .foregroundStyle(.white.opacity(0.8))
@@ -1140,6 +1152,9 @@ private struct RecentScanRow: View {
         }
         .buttonStyle(.plain)
         .onHover { hovering = $0 }
-        .help("Scan \(scan.target) again — last measured at \(scan.totalHuman)")
+        .help(isWatched
+              ? "Scan \(scan.target) again — last measured at \(scan.totalHuman). "
+                + "Watched, so it also rescans overnight."
+              : "Scan \(scan.target) again — last measured at \(scan.totalHuman)")
     }
 }

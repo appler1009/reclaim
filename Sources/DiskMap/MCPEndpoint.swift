@@ -255,21 +255,15 @@ struct MCPEndpoint {
 
     /// Scans a path for real and files the result into history.
     static func liveScan(_ path: String) -> DiskQueries.TargetSummary? {
-        let url = URL(fileURLWithPath: path)
-        let session = ScanSession()
-        guard let root = Scanner.scan(url: url, options: ScanOptions(), session: session) else {
-            return nil
-        }
-        let snapshot = Snapshot(root: root, target: url.path, measure: .physical,
-                                volume: VolumeSpace.read(for: url))
-        SnapshotStore().record(snapshot)
-        return DiskQueries.TargetSummary(target: url.path,
+        let store = SnapshotStore()
+        guard let snapshot = UnattendedScan.run(path: path, store: store) else { return nil }
+        return DiskQueries.TargetSummary(target: snapshot.target,
                                          lastScan: snapshot.takenAt,
                                          totalBytes: snapshot.totalBytes,
                                          totalHuman: ByteFormat.string(snapshot.totalBytes),
                                          fileCount: snapshot.fileCount,
                                          unreadableCount: snapshot.unreadableCount,
-                                         scanCount: SnapshotStore().snapshots(forTarget: url.path).count)
+                                         scanCount: store.snapshots(forTarget: snapshot.target).count)
     }
 
     // MARK: - JSON-RPC shapes

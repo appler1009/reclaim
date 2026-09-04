@@ -95,6 +95,9 @@ final class AppModel: ObservableObject {
     }
 
     private var volumeObservers: [NSObjectProtocol] = []
+    /// Kept apart from `volumeObservers`: this one is on the default centre,
+    /// and an observer has to be removed from the centre it was added to.
+    private var historyObserver: NSObjectProtocol?
     /// Counts enumerations so a slow one cannot overwrite a newer result.
     private var volumeRefresh = 0
 
@@ -105,6 +108,12 @@ final class AppModel: ObservableObject {
         refreshRecentScans()
         hasFullDiskAccess = Self.probeFullDiskAccess()
         Log.info("full disk access probed", ["fullDiskAccess": "\(hasFullDiskAccess)"])
+        // An unattended scan of the watchlist writes history this window knows
+        // nothing about; its start screen should still show it.
+        historyObserver = NotificationCenter.default.addObserver(
+            forName: .reclaimHistoryChanged, object: nil, queue: .main) { [weak self] _ in
+                MainActor.assumeIsolated { self?.refreshRecentScans() }
+            }
         let center = NSWorkspace.shared.notificationCenter
         for name in [NSWorkspace.didMountNotification,
                      NSWorkspace.didUnmountNotification,
@@ -118,6 +127,7 @@ final class AppModel: ObservableObject {
     deinit {
         let center = NSWorkspace.shared.notificationCenter
         volumeObservers.forEach { center.removeObserver($0) }
+        if let historyObserver { NotificationCenter.default.removeObserver(historyObserver) }
     }
 
     private var stress: NavigationStress?
