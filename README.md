@@ -50,8 +50,8 @@ screenshots:
 claude mcp add --transport http reclaim http://127.0.0.1:8739/mcp
 ```
 
-`list_targets`, `disk_usage`, `largest_items`, `growth`, `scan_history`, and `scan_now`
-for a folder with no history yet. The address is also on the File menu.
+`list_targets`, `disk_usage`, `largest_items`, `growth`, `volume_space` for space no
+scan can account for, `scan_history`, and `scan_now` for a folder with no history yet. The address is also on the File menu.
 
 ```
 growth → total: +25.0 MB

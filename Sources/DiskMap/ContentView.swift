@@ -274,6 +274,15 @@ private struct HeaderBar: View {
                     Metric(value: ByteFormat.string(model.volumeFree), caption: "Free on volume")
                         .help("Space still available on the whole disk this scan came from — not part of the totals to the left.")
                 }
+                if let unaccounted = model.unaccountedBytes {
+                    // Sits with free space rather than with the totals: it is a
+                    // fact about the volume, and the one figure here that no
+                    // amount of drilling into the map will explain.
+                    Metric(value: ByteFormat.string(unaccounted), caption: "Unaccounted")
+                        .contentTransition(.numericText())
+                        .animation(.snappy(duration: 0.22), value: unaccounted)
+                        .help(unaccountedHelp(unaccounted))
+                }
                 if model.trash.items > 0 {
                     // Its own group: this is neither the folder in view nor free
                     // space, but bytes waiting to become free.
@@ -317,6 +326,22 @@ private struct HeaderBar: View {
         .padding(.horizontal, 18)
         .frame(height: 56)
         .background(Color.panel)
+    }
+
+    /// Says what the gap is without guessing which cause it was: the honest
+    /// answer is a short list of places a scan cannot look.
+    private func unaccountedHelp(_ bytes: UInt64) -> String {
+        var text = "\(ByteFormat.string(bytes)) of this volume is occupied by something "
+            + "the scan found no file for. Local Time Machine snapshots and purgeable "
+            + "caches hold real space that no walk of the filesystem can see."
+        if let purgeable = model.volumeSpace?.purgeable, purgeable > 0 {
+            text += " macOS counts \(ByteFormat.string(purgeable)) of the disk as purgeable — "
+                + "space it would give back under pressure."
+        }
+        if let unreadable = model.scanRoot?.unreadableCount, unreadable > 0 {
+            text += " \(unreadable) directories could not be read, so some of this may be theirs."
+        }
+        return text
     }
 
     private var trashHelp: String {

@@ -40,6 +40,10 @@ final class AppModel: ObservableObject {
     @Published var scannedURL: URL?
     @Published var volumeCapacity: UInt64 = 0
     @Published var volumeFree: UInt64 = 0
+    /// The scanned volume's own account of itself. Kept beside the two figures
+    /// above because it also knows what the system holds as purgeable, which is
+    /// space a scan will never find a file for.
+    @Published var volumeSpace: VolumeSpace?
     /// What is sitting in this volume's Trash: spoken for, but not freed until
     /// the Trash is emptied.
     @Published var trash = TrashInspector.Contents()
@@ -363,10 +367,15 @@ final class AppModel: ObservableObject {
     private func recordHistory(root: FileItem, target: String) {
         let store = snapshotStore
         let measure = self.measure
+        // Read here, on the main actor, while the scan's numbers are still the
+        // current ones: a snapshot's volume figures have to describe the same
+        // moment as its tree.
+        let volume = VolumeSpace.read(for: URL(fileURLWithPath: target))
         comparison = store.mostRecent(forTarget: target)
         // Writing history must never hold up the interface.
         DispatchQueue.global(qos: .utility).async {
-            let snapshot = Snapshot(root: root, target: target, measure: measure)
+            let snapshot = Snapshot(root: root, target: target, measure: measure,
+                                    volume: volume)
             store.record(snapshot)
             DispatchQueue.main.async { [weak self] in self?.refreshRecentScans() }
             Log.info("snapshot recorded", ["target": target,
@@ -534,12 +543,30 @@ final class AppModel: ObservableObject {
     }
 
     private func readVolumeInfo(for url: URL) {
-        let keys: Set<URLResourceKey> = [.volumeTotalCapacityKey, .volumeAvailableCapacityForImportantUsageKey]
-        if let values = try? url.resourceValues(forKeys: keys) {
-            volumeCapacity = UInt64(values.volumeTotalCapacity ?? 0)
-            volumeFree = UInt64(values.volumeAvailableCapacityForImportantUsage ?? 0)
-        }
+        guard let space = VolumeSpace.read(for: url) else { return }
+        volumeSpace = space
+        volumeCapacity = space.capacity
+        volumeFree = space.available
     }
+
+    /// Occupied space this scan cannot attribute to anything it saw.
+    ///
+    /// Only meaningful when the scan covers the whole volume and is measuring
+    /// space on disk: against a folder, or against the files' own sizes, the
+    /// two totals are not describing the same thing. Small gaps are noise —
+    /// the volume moves while the scan runs — so only a real one is reported.
+    var unaccountedBytes: UInt64? {
+        guard measure == .physical, !isScanning,
+              let space = volumeSpace, let root = scanRoot,
+              let target = scannedURL?.path, space.covers(target: target) else { return nil }
+        let scanned = root.size(measure)
+        guard space.used > scanned else { return nil }
+        let gap = space.used - scanned
+        return gap >= Self.unaccountedFloor ? gap : nil
+    }
+
+    /// Below this, the gap says more about timing than about the disk.
+    static let unaccountedFloor: UInt64 = 1024 * 1024 * 1024
 
     /// Installs an already-scanned tree, so tests can drive the model without
     /// waiting on a background scan.
