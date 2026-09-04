@@ -28,6 +28,8 @@ struct DiskMapApp: App {
             // Kept after .newItem rather than replacing it, so New Window (⌘N)
             // survives: a window is a scan, and opening another is the point.
             CommandGroup(after: .newItem) {
+                NewTabCommand()
+                Divider()
                 ScanCommands()
             }
             CommandGroup(after: .sidebar) {
@@ -38,6 +40,30 @@ struct DiskMapApp: App {
         Settings {
             SettingsView()
         }
+    }
+}
+
+/// Opens another scan in a tab of the window in front.
+///
+/// The tab bar already offers this through its "+", and a window can be torn
+/// into its own; the File menu was the one place that only offered a whole new
+/// window. Sent up the responder chain rather than called on a window we picked
+/// ourselves: the chain knows which window is frontmost, and AppKit is what
+/// makes a tab out of a scene.
+private struct NewTabCommand: View {
+    /// Only to know whether a scan window is in front. Read the same way the
+    /// other File-menu items read it, so it tracks focus rather than being
+    /// decided once when the menu is built.
+    @FocusedValue(\.scan) private var model
+
+    var body: some View {
+        Button("New Tab") {
+            NSApp.sendAction(#selector(NSResponder.newWindowForTab(_:)), to: nil, from: nil)
+        }
+        .keyboardShortcut("t", modifiers: .command)
+        // Nothing to add a tab to when no scan window is in front, and the
+        // menu should say so rather than doing nothing when picked.
+        .disabled(model == nil)
     }
 }
 
