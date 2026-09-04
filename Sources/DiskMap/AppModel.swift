@@ -38,6 +38,11 @@ final class AppModel: ObservableObject {
     private(set) var selectedItem: FileItem?
     @Published var measure: SizeMeasure = .physical
     @Published var scannedURL: URL?
+    /// The window this scan is being shown in, once there is one. Weak: the
+    /// window owns the hosting view that owns this model, not the other way
+    /// round. Set by `WindowTabTitle`, which is already in the view for the
+    /// same reason — it is the one place with the window in hand.
+    weak var window: NSWindow?
     @Published var volumeCapacity: UInt64 = 0
     @Published var volumeFree: UInt64 = 0
     /// The scanned volume's own account of itself. Kept beside the two figures
