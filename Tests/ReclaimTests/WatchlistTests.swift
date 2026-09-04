@@ -140,3 +140,30 @@ struct WatchlistRescanTests {
         #expect(store.snapshots(forTarget: scanned.path).count == 1)
     }
 }
+
+@Suite("Settings labels")
+struct SettingsLabelTests {
+    private func volume(_ name: String, capacity: UInt64, path: String) -> VolumeInfo {
+        VolumeInfo(url: URL(fileURLWithPath: path), name: name, capacity: capacity,
+                   available: capacity / 2, free: capacity / 2,
+                   isInternal: path == "/", isRemovable: false, isReadOnly: false)
+    }
+
+    @Test func aVolumeIsNamedWithItsSizeAndWhereItIsMounted() {
+        // Sizes are the app's own everywhere: powers of 1024, as the map and
+        // the header strip already show them.
+        #expect(SettingsView.label(for: volume("Macintosh HD", capacity: 245_000_000_000, path: "/"))
+                == "Macintosh HD — 228 GB · /")
+    }
+
+    @Test func twoDisksSharingANameAreStillToldApart() {
+        // The case the label exists for: a clone carries the original's name.
+        let original = SettingsView.label(for: volume("Untitled", capacity: 500_000_000_000,
+                                                      path: "/Volumes/Untitled"))
+        let clone = SettingsView.label(for: volume("Untitled", capacity: 2_000_000_000_000,
+                                                   path: "/Volumes/Untitled 1"))
+        #expect(original != clone)
+        #expect(clone.contains("/Volumes/Untitled 1"))
+        #expect(clone.contains("1.8 TB"))
+    }
+}

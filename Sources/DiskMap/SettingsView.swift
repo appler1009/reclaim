@@ -44,8 +44,17 @@ struct SettingsView: View {
                     Button("Add Folder…") { chooseFolder() }
                     Menu("Add Volume") {
                         ForEach(volumes) { volume in
-                            Button(volume.name) { watchlist.add(volume.url.path) }
-                                .disabled(watchlist.contains(volume.url.path))
+                            Button { watchlist.add(volume.url.path) } label: {
+                                // A tick rather than a silently dead row: a
+                                // volume already watched is disabled, and the
+                                // menu should say which of the two it is.
+                                if watchlist.contains(volume.url.path) {
+                                    Label(Self.label(for: volume), systemImage: "checkmark")
+                                } else {
+                                    Text(Self.label(for: volume))
+                                }
+                            }
+                            .disabled(watchlist.contains(volume.url.path))
                         }
                     }
                     // Sized to its own label, so the chevron sits against the
@@ -88,6 +97,13 @@ struct SettingsView: View {
         panel.message = "Choose a disk or folder to keep measuring overnight."
         guard panel.runModal() == .OK, let url = panel.url else { return }
         watchlist.add(url.path)
+    }
+
+    /// Names alone do not identify a disk: two can be called Untitled, and a
+    /// backup clone usually carries the name of what it copied. Size and mount
+    /// point are what tell them apart, so the menu says all three.
+    static func label(for volume: VolumeInfo) -> String {
+        "\(volume.name) — \(ByteFormat.string(volume.capacity)) · \(volume.url.path)"
     }
 
     /// The hour in the user's own clock convention, so a 12-hour locale is not
