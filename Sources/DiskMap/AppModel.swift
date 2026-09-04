@@ -331,16 +331,21 @@ final class AppModel: ObservableObject {
             DispatchQueue.main.async { self?.progress = snapshot }
         }
 
-        DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+        // Held strongly, deliberately, for as long as the scan runs: a window
+        // closed near the end of a ten-minute volume walk should still file
+        // what the walk found, and the model is what files it. The hops back
+        // onto the actor take a weak reference, since by then the work is done
+        // and there is nothing left to save.
+        DispatchQueue.global(qos: .userInitiated).async { [self] in
             let root = Scanner.scan(url: url, options: ScanOptions(), session: session) { partial in
                 // The first level, milliseconds in: show it and start growing it.
-                DispatchQueue.main.async {
+                DispatchQueue.main.async { [weak self] in
                     guard let self, self.session === session else { return }
                     self.adoptPartial(partial, session: session)
                 }
             }
             root?.warmTotals()
-            DispatchQueue.main.async {
+            DispatchQueue.main.async { [weak self] in
                 guard let self, self.session === session else { return }
                 self.stopLiveUpdates()
                 guard !session.isCancelled else {
@@ -388,13 +393,14 @@ final class AppModel: ObservableObject {
         // moment as its tree.
         let volume = VolumeSpace.read(for: URL(fileURLWithPath: target))
         comparison = store.mostRecent(forTarget: target)
-        // Built here, where the tree lives. Trashing removes nodes from it on
-        // this actor, so a background walk could be reading a folder's children
-        // as one of them goes — rare, and a crash when it happens. What goes to
-        // the background is the finished snapshot, which is a value.
-        let snapshot = Snapshot(root: root, target: target, measure: measure, volume: volume)
-        // Writing history must never hold up the interface.
+        // Collected here, where the tree lives: trashing removes nodes from it
+        // on this actor, so a walk elsewhere could be reading a folder's
+        // children as one of them goes — rare, and a crash when it happens.
+        // Only the walk is owed to this actor; what crosses is a value.
+        let draft = Snapshot.draft(root: root, target: target, measure: measure)
+        // Shaping and writing history must never hold up the interface.
         DispatchQueue.global(qos: .utility).async { [weak self] in
+            let snapshot = Snapshot(draft: draft, measure: measure, volume: volume)
             store.record(snapshot)
             DispatchQueue.main.async { self?.refreshRecentScans() }
             Log.info("snapshot recorded", ["target": target,

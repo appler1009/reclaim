@@ -73,9 +73,10 @@ enum ScanWindows {
 ///
 /// The per-window schedule can only refresh what somebody left open; this one
 /// answers to the list instead, so a target gains a point a night whether or
-/// not it was looked at. It shares `NightlyRescan`'s clock and its claims, so a
-/// window showing a watched target and this runner never scan the same thing
-/// twice in one night — whichever gets there first takes it.
+/// not it was looked at. It shares `NightlyRescan`'s clock, and no target is
+/// scanned twice in one night: a window that will refresh a target itself
+/// keeps it (see `ScanWindows`), and the claim settles anything left over —
+/// a target whose window cannot rescan it, or one already run tonight.
 ///
 /// Still in-app: nothing runs while Reclaim is closed, which is a deliberate
 /// limit rather than an oversight.
