@@ -718,17 +718,16 @@ private struct Overlay: View {
                 VStack(spacing: 18) {
                     Spacer(minLength: 0)
                     VStack(spacing: 18) {
-                        VStack(spacing: 10) {
-                            Image(systemName: "square.grid.3x3.topleft.filled")
-                                .font(.system(size: 42)).foregroundStyle(Color.ember)
-                            Text("See where your disk space went")
-                                .font(.system(size: 22, weight: .bold))
-                                .foregroundStyle(.white.opacity(0.92))
-                            Text("Pick a disk or a folder. Every file becomes a tile sized by the\nspace it uses, so you can see where it all went.")
-                                .font(.system(size: 12)).foregroundStyle(.white.opacity(0.45))
-                                .multilineTextAlignment(.center)
+                        // The app's own icon rather than a symbol standing in
+                        // for it: the same mark as the Dock and the tab, so the
+                        // window is recognisably this app and nothing else.
+                        if let icon = NSApp.applicationIconImage {
+                            Image(nsImage: icon)
+                                .resizable()
+                                .interpolation(.high)
+                                .frame(width: 72, height: 72)
+                                .padding(.top, 30)
                         }
-                        .padding(.top, 34)
 
                         VolumeGrid(model: model)
 
