@@ -48,7 +48,9 @@ struct SettingsView: View {
                                 .disabled(watchlist.contains(volume.url.path))
                         }
                     }
-                    .frame(width: 130)
+                    // Sized to its own label, so the chevron sits against the
+                    // words rather than adrift at the end of a fixed width.
+                    .fixedSize()
                     .disabled(volumes.isEmpty)
                     Spacer()
                 }
