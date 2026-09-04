@@ -37,11 +37,24 @@ private final class FakeScene {
     func windows() -> [NSWindow] { opened ? [front, made] : [front] }
 
     /// Runs the action and waits for it to settle.
-    func newTab(open: (() -> Void)? = nil) async -> NSWindow? {
-        await withCheckedContinuation { continuation in
+    ///
+    /// `polls` drives the retry loop directly instead of leaving it to the run
+    /// loop: a test that waits for real milliseconds passes on a quiet machine
+    /// and fails on a busy one, which is what a loaded CI runner is.
+    func newTab(open: (() -> Void)? = nil,
+                polls: ((Int) -> Void)? = nil,
+                clock: (() -> Date)? = nil) async -> NSWindow? {
+        var poll = 0
+        return await withCheckedContinuation { continuation in
             _ = NewTab.open(front: front,
                             openWindow: open ?? { self.open() },
                             windows: { self.windows() },
+                            now: clock ?? Date.init,
+                            schedule: { look in
+                                poll += 1
+                                polls?(poll)
+                                look()
+                            },
                             then: { continuation.resume(returning: $0) })
         }
     }
@@ -86,21 +99,26 @@ struct NewTabTests {
         // window standing beside the first.
         let scene = FakeScene()
         defer { scene.close() }
-        let created = await scene.newTab(open: {
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) { scene.open() }
-        })
+        // Nothing on the first two looks; the window turns up before the third.
+        let created = await scene.newTab(open: {},
+                                         polls: { poll in if poll == 3 { scene.open() } })
 
         #expect(created === scene.made)
         #expect(scene.front.tabGroup?.windows.contains(scene.made) == true)
+        #expect(scene.front.tabbingMode == .automatic,
+                "and the borrowed mode is not held past the join")
     }
 
     @Test func aWindowThatNeverArrivesGivesUpAndPutsThingsBack() async {
         let scene = FakeScene()
         defer { scene.close() }
         scene.front.tabbingMode = .automatic
-        // Nothing is ever made: the action must not hold the borrowed mode, or
-        // wait, for ever.
-        let created = await scene.newTab(open: {})
+        // A clock the test moves: the deadline is reached because time is said
+        // to have passed, not because the test sat and waited for it.
+        var clock = Date()
+        let created = await scene.newTab(open: {},
+                                         polls: { _ in clock += NewTab.patience },
+                                         clock: { clock })
 
         #expect(created == nil)
         #expect(scene.front.tabbingMode == .automatic, "given back even when nothing came")
