@@ -210,15 +210,41 @@ struct ContentView: View {
 
 // MARK: - Header
 
+/// The app's icon, at whatever size is asked for.
+///
+/// One mark in one place: the idle screen wears it large and the header small,
+/// and a scan finishing must not swap the reader onto a different symbol. Read
+/// from the named asset rather than `NSApp`, which need not have been asked for
+/// its icon yet, and drawn at a fixed size either way so nothing below it moves
+/// if the image is missing.
+private struct AppMark: View {
+    let size: CGFloat
+
+    var body: some View {
+        Group {
+            if let icon = NSImage(named: NSImage.applicationIconName) {
+                Image(nsImage: icon)
+                    .resizable()
+                    .interpolation(.high)
+            } else {
+                // Ad-hoc builds and previews can come up without one.
+                Color.clear
+            }
+        }
+        .frame(width: size, height: size)
+        // It replaced a heading, and an unlabelled image is what a screen
+        // reader would otherwise meet first on a screen with no title left.
+        .accessibilityHidden(true)
+    }
+}
+
 private struct HeaderBar: View {
     @ObservedObject var model: AppModel
 
     var body: some View {
         HStack(spacing: 18) {
             HStack(spacing: 9) {
-                Image(systemName: "square.grid.3x3.topleft.filled")
-                    .foregroundStyle(Color.ember)
-                    .font(.system(size: 15, weight: .bold))
+                AppMark(size: 17)
                 Text("RECLAIM")
                     .font(.system(size: 13, weight: .heavy))
                     .tracking(2.6)
@@ -718,17 +744,11 @@ private struct Overlay: View {
                 VStack(spacing: 18) {
                     Spacer(minLength: 0)
                     VStack(spacing: 18) {
-                        VStack(spacing: 10) {
-                            Image(systemName: "square.grid.3x3.topleft.filled")
-                                .font(.system(size: 42)).foregroundStyle(Color.ember)
-                            Text("See where your disk space went")
-                                .font(.system(size: 22, weight: .bold))
-                                .foregroundStyle(.white.opacity(0.92))
-                            Text("Pick a disk or a folder. Every file becomes a tile sized by the\nspace it uses, so you can see where it all went.")
-                                .font(.system(size: 12)).foregroundStyle(.white.opacity(0.45))
-                                .multilineTextAlignment(.center)
-                        }
-                        .padding(.top, 34)
+                        // The app's own icon rather than a symbol standing in
+                        // for it: the same mark as the Dock, the tab and the
+                        // header, so the window is recognisably this app.
+                        AppMark(size: 72)
+                            .padding(.top, 30)
 
                         VolumeGrid(model: model)
 
