@@ -186,7 +186,10 @@ struct ContentView: View {
     private var windowTitle: String {
         guard model.scanRoot != nil else {
             // Nothing scanned yet: name it for what it is waiting to become.
-            return model.isScanning ? "Scanning…" : "New Scan"
+            if model.isScanning { return "Scanning…" }
+            // A restored tab knows its target before it has a tree.
+            if model.queuedTarget != nil { return model.scanTargetName }
+            return "New Scan"
         }
         return model.scanTargetName
     }
@@ -741,6 +744,23 @@ private struct Overlay: View {
         ZStack {
             Color.ink.opacity(model.phase == .scanning ? 0.86 : 1).ignoresSafeArea()
             switch model.phase {
+            case .idle where model.queuedTarget != nil:
+                // A restored tab, waiting its turn. Restored tabs scan one at a
+                // time so that opening the app is not three walks of the disk
+                // at once — but a window that simply offered a start screen
+                // would be lying about what is going to happen to it.
+                VStack(spacing: 14) {
+                    ProgressView().controlSize(.large)
+                    Text("Waiting to scan \(model.queuedTarget?.lastPathComponent ?? "")")
+                        .font(.system(size: 15, weight: .semibold))
+                        .foregroundStyle(.white.opacity(0.9))
+                    Text("Restored tabs are scanned one at a time.")
+                        .font(.system(size: 12)).foregroundStyle(.white.opacity(0.55))
+                    Button("Scan Now") {
+                        if let target = model.queuedTarget { model.scan(target) }
+                    }
+                    .buttonStyle(GhostButtonStyle())
+                }
             case .idle:
                 VStack(spacing: 18) {
                     Spacer(minLength: 0)
