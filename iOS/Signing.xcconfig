@@ -12,3 +12,7 @@
 // The `?` is what makes it optional — without the file, this include is
 // skipped rather than failing the build.
 #include? "Local.xcconfig"
+
+// The version both apps ship as, written from the root VERSION file by
+// Scripts/set_version.sh so the two cannot drift apart.
+#include "Version.xcconfig"
