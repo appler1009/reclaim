@@ -269,20 +269,85 @@ struct RestoreQueueTests {
         #expect(second.queuedTarget == nil)
     }
 
-    @Test func scanningAQueuedTabByHandClearsItsWait() throws {
+    /// The button on a waiting tab goes through the queue, not around it.
+    ///
+    /// Scanning straight from the button would start a second walk of the disk
+    /// beside the one already running — the one thing the queue exists to
+    /// prevent — and leave a stale entry behind to be started all over again
+    /// when the tab in front finished.
+    @Test func scanNextTakesTheFrontOfTheQueueWithoutStartingASecondScan() throws {
+        let fixture = try Fixture()
+        defer { fixture.cleanUp() }
+        for name in ["running", "last", "impatient"] {
+            try fixture.file("\(name)/big.bin", bytes: 2048)
+        }
+        let restore = queue()
+
+        let running = AppModel()
+        let last = AppModel()
+        let impatient = AppModel()
+        restore.enqueue(running, target: fixture.root.appendingPathComponent("running"))
+        restore.enqueue(last, target: fixture.root.appendingPathComponent("last"))
+        restore.enqueue(impatient, target: fixture.root.appendingPathComponent("impatient"))
+
+        restore.scanNext(impatient)
+        // Still only one scan: the tab in front keeps the disk, and minutes of
+        // a volume walk are not thrown away to satisfy a button.
+        #expect(running.isScanning)
+        #expect(!impatient.isScanning)
+        #expect(impatient.queuedTarget != nil)
+
+        running.cancelScan()
+        for _ in 0 ..< 200 where !impatient.isScanning {
+            RunLoop.current.run(until: Date().addingTimeInterval(0.01))
+        }
+        // It jumped the one that was queued before it.
+        #expect(impatient.isScanning)
+        #expect(!last.isScanning)
+        #expect(last.queuedTarget != nil)
+    }
+
+    /// A tab that goes and scans something itself is no longer waiting, and the
+    /// queue must not come back later and scan it a second time.
+    @Test func aTabThatScansOnItsOwnDropsOutOfTheQueue() throws {
+        let fixture = try Fixture()
+        defer { fixture.cleanUp() }
+        try fixture.file("running/big.bin", bytes: 2048)
+        try fixture.file("queued/big.bin", bytes: 2048)
+        try fixture.file("elsewhere/big.bin", bytes: 2048)
+        let restore = queue()
+
+        let running = AppModel()
+        let wanderer = AppModel()
+        restore.enqueue(running, target: fixture.root.appendingPathComponent("running"))
+        restore.enqueue(wanderer, target: fixture.root.appendingPathComponent("queued"))
+
+        // Off it goes to scan somewhere else entirely — from the menu, say.
+        wanderer.scan(fixture.root.appendingPathComponent("elsewhere"))
+        #expect(wanderer.queuedTarget == nil)
+        let chosen = wanderer.scannedURL
+
+        running.cancelScan()
+        for _ in 0 ..< 100 {
+            RunLoop.current.run(until: Date().addingTimeInterval(0.01))
+        }
+        // Still showing what it was asked for, not dragged back to the queue's
+        // idea of what it was for.
+        #expect(wanderer.scannedURL == chosen)
+    }
+
+    @Test func scanNextOnATabTheQueueHasForgottenStillScansIt() throws {
         let fixture = try Fixture()
         defer { fixture.cleanUp() }
         try fixture.file("one/big.bin", bytes: 2048)
         let restore = queue()
 
-        let waiting = AppModel()
-        restore.enqueue(AppModel(), target: fixture.root)
-        restore.enqueue(waiting, target: fixture.root.appendingPathComponent("one"))
-        #expect(waiting.queuedTarget != nil)
-
-        // The button on a waiting tab: it stops waiting and scans.
-        waiting.scan(fixture.root.appendingPathComponent("one"))
-        #expect(waiting.queuedTarget == nil)
-        #expect(waiting.isScanning)
+        // A model holding a target but not in any queue — the plan was spent,
+        // or the entry was swept. The button should still do the obvious thing.
+        let stranded = AppModel()
+        stranded.queuedTarget = fixture.root.appendingPathComponent("one")
+        restore.scanNext(stranded)
+        #expect(stranded.isScanning)
+        #expect(stranded.queuedTarget == nil)
     }
 }

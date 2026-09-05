@@ -751,15 +751,20 @@ private struct Overlay: View {
                 // would be lying about what is going to happen to it.
                 VStack(spacing: 14) {
                     ProgressView().controlSize(.large)
-                    Text("Waiting to scan \(model.queuedTarget?.lastPathComponent ?? "")")
+                    // Named the way the rest of the app names a target: the
+                    // startup volume's last path component is the empty string,
+                    // which read as "Waiting to scan " with nothing after it.
+                    Text("Waiting to scan \(model.scanTargetName)")
                         .font(.system(size: 15, weight: .semibold))
                         .foregroundStyle(.white.opacity(0.9))
                     Text("Restored tabs are scanned one at a time.")
                         .font(.system(size: 12)).foregroundStyle(.white.opacity(0.55))
-                    Button("Scan Now") {
-                        if let target = model.queuedTarget { model.scan(target) }
-                    }
-                    .buttonStyle(GhostButtonStyle())
+                    // Through the queue rather than around it: scanning from
+                    // here directly would start a second walk of the disk
+                    // beside the one already running, and leave a stale entry
+                    // behind to be started again later.
+                    Button("Scan Next") { SessionRestore.shared.scanNext(model) }
+                        .buttonStyle(GhostButtonStyle())
                 }
             case .idle:
                 VStack(spacing: 18) {

@@ -20,7 +20,7 @@ final class SessionRestore: ObservableObject {
     /// How long to wait for a window that was asked for. Past this the restore
     /// gives up rather than leaving the queue half-applied — the same patience
     /// `NewTab` allows, for the same reason.
-    static let patience: TimeInterval = 2
+    nonisolated static let patience: TimeInterval = 2
 
     private let store: SessionStore
     /// Targets still to be handed out, in the order windows will be made.
@@ -106,18 +106,52 @@ final class SessionRestore: ObservableObject {
         step(steps[...])
     }
 
-    /// The live wiring: AppKit makes the windows, and the app's own New Tab
-    /// action is what joins one to the window in front — the same path the menu
-    /// takes, rather than a second way of making a tab that could disagree.
+    /// The live wiring.
+    ///
+    /// Both kinds of step go through the app's own New Tab action, which
+    /// already knows how to ask AppKit for a scene and wait for it to turn up.
+    /// A standalone window is then made by detaching the tab it produced —
+    /// rather than by sending `newWindowForTab:` and hoping, which follows the
+    /// system's "Prefer tabs when opening documents" setting and on a Mac set to
+    /// "always" would have quietly given a tab where the plan asked for a
+    /// window.
     func openWindows(whenDone: @escaping () -> Void = {}) {
-        openWindows(openWindow: { done in
-            NSApp.sendAction(#selector(NSResponder.newWindowForTab(_:)), to: nil, from: nil)
-            // A new window has no completion; it is waited for the same way a
-            // tab is, and the next step goes ahead regardless once it arrives.
-            DispatchQueue.main.asyncAfter(deadline: .now() + NewTab.pollInterval) { done() }
-        }, openTab: { done in
-            NewTab.open(front: NSApp.keyWindow) { _ in done() }
-        }, whenDone: whenDone)
+        openWindows(openWindow: { done in self.open(detached: true, then: done) },
+                    openTab: { done in self.open(detached: false, then: done) },
+                    whenDone: whenDone)
+    }
+
+    private func open(detached: Bool, then done: @escaping () -> Void) {
+        let owed = unclaimed.count
+        NewTab.open(front: NSApp.keyWindow, then: { created in
+            if detached, let created, created.tabGroup != nil {
+                created.moveTabToNewWindow(nil)
+            }
+            self.whenClaimed(fewerThan: owed, then: done)
+        })
+    }
+
+    /// Waits for the window that was just made to take its target.
+    ///
+    /// The window arriving is not the same event as its model being built, and
+    /// it is the model that claims — so advancing on the window alone would
+    /// reintroduce the race that opening one at a time exists to avoid. Past
+    /// `patience` the step goes ahead anyway: a restore that stalls for ever is
+    /// worse than one that comes back short.
+    private func whenClaimed(fewerThan owed: Int,
+                             deadline: Date = Date().addingTimeInterval(SessionRestore.patience),
+                             then done: @escaping () -> Void) {
+        guard unclaimed.count >= owed, Date() < deadline else {
+            if unclaimed.count >= owed {
+                Log.warning("session restore: a window never claimed its target",
+                            ["owed": "\(owed)"])
+            }
+            done()
+            return
+        }
+        DispatchQueue.main.asyncAfter(deadline: .now() + NewTab.pollInterval) {
+            self.whenClaimed(fewerThan: owed, deadline: deadline, then: done)
+        }
     }
 
     /// Nothing more is owed. Called when the plan is spent, so a window opened
@@ -136,10 +170,31 @@ final class SessionRestore: ObservableObject {
         startNext()
     }
 
+    /// Puts a waiting tab at the front of the queue, for the button on its own
+    /// waiting screen.
+    ///
+    /// Not "start it right now": something is scanning whenever a tab is
+    /// waiting, and starting a second walk of the disk is the one thing this
+    /// queue exists to prevent. Cancelling the scan in front would throw away
+    /// however far it had got, which for a volume is minutes of work nobody
+    /// asked to lose. So it goes next, and the tab in front finishes first.
+    func scanNext(_ model: AppModel) {
+        guard let index = queue.firstIndex(where: { $0.model === model }) else {
+            // Not in the queue at all — already started, or the plan is spent.
+            if let target = model.queuedTarget { model.scan(target) }
+            return
+        }
+        queue.insert(queue.remove(at: index), at: 0)
+        startNext()
+    }
+
     private func startNext() {
         guard !scanning else { return }
-        // A tab closed while it waited has nothing left to scan for.
-        while let next = queue.first, next.model == nil {
+        // Entries that are no longer waiting for anything: a tab closed while
+        // it waited, or one that went and scanned something itself — starting
+        // its own scan is what clears `queuedTarget`, which makes that flag the
+        // honest test of whether this entry is still owed a turn.
+        while let next = queue.first, next.model == nil || next.model?.queuedTarget == nil {
             queue.removeFirst()
         }
         guard let next = queue.first, let model = next.model else { return }
