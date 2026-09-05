@@ -64,9 +64,13 @@ growth → total: +25.0 MB
 ## Build and run
 
 ```sh
+./Scripts/bootstrap.sh          # once per clone
 ./Scripts/build_app.sh          # → dist/Reclaim.app
 open dist/Reclaim.app
 ```
+
+`bootstrap.sh` points git at the hooks in `.githooks` and generates the companion's Xcode
+project. It is needed once because hooks live in `.git`, which is not version controlled.
 
 The script builds a release binary, generates the icon, writes `Info.plist`, and signs
 the bundle: with a `Developer ID Application` certificate plus hardened runtime and a
@@ -75,6 +79,27 @@ secure timestamp when one is in the keychain, ad-hoc otherwise.
 ```sh
 TEAM_ID=XXXXXXXXXX BUNDLE_ID=com.example.reclaim ./Scripts/build_app.sh
 ./Scripts/notarize.sh           # after: xcrun notarytool store-credentials reclaim-notary …
+```
+
+### The companion app
+
+`iOS/` holds an iPhone app that browses the tabs this one has open — see
+[For agents](#for-agents) for the service it talks to. Its Xcode project is generated
+from `iOS/project.yml` rather than committed, so a checked-in `pbxproj` cannot become a
+merge conflict:
+
+```sh
+brew install xcodegen
+./iOS/generate.sh               # after adding or removing a source file
+open iOS/ReclaimCompanion.xcodeproj
+```
+
+The hooks installed by `bootstrap.sh` regenerate it after a pull or a checkout, so this is
+only needed when you change the files yourself. A device build needs your own team in
+`iOS/Local.xcconfig`, which git ignores:
+
+```
+DEVELOPMENT_TEAM = XXXXXXXXXX
 ```
 
 ### Permissions

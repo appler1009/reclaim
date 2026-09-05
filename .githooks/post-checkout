@@ -1,0 +1,4 @@
+#!/bin/bash
+# After a checkout — a branch switch, or the first clone. Same reason as the
+# merge hook: what the project should contain has just changed underneath it.
+exec "$(git rev-parse --show-toplevel)/iOS/refresh-if-stale.sh"
