@@ -31,6 +31,23 @@ targets:
         # The same artwork as the Mac app, from the same generator — see
         # Scripts/make_icon.swift, which writes the square iOS wants.
         ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
+    preBuildScripts:
+      # A file added since the project was generated is not in it, and the
+      # failure that follows — a symbol nothing defines — says nothing about
+      # why. This only warns: rewriting the project from inside a build makes
+      # Xcode reload it mid-build, which is a worse cure than the disease.
+      - name: Check the project is current
+        basedOnDependencyAnalysis: false
+        # Piped rather than a here-string: a build phase runs under /bin/sh,
+        # which has no process substitution.
+        script: |
+          cd "$SRCROOT"
+          find ReclaimCompanion -name '*.swift' | while read -r file; do
+            if ! grep -q "$(basename "$file")" ReclaimCompanion.xcodeproj/project.pbxproj; then
+              echo "warning: $file is not in the Xcode project — run ./iOS/generate.sh"
+            fi
+          done
+          exit 0
     # A device build needs a development team, which is nobody's business but
     # the builder's. See Signing.xcconfig.
     configFiles:

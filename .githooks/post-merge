@@ -1,0 +1,4 @@
+#!/bin/bash
+# After a pull: the Xcode project is generated, so a change to its spec has to
+# be applied before the project on disk means anything.
+exec "$(git rev-parse --show-toplevel)/iOS/refresh-if-stale.sh"

@@ -77,3 +77,66 @@ jobs:
           name: Reclaim-app
           path: dist/Reclaim.zip
           retention-days: 14
+
+  companion:
+    # The iOS app shares ReclaimKit with the Mac app, so a change to the wire
+    # types can break it from the other side of the repository. Nothing built it
+    # until now, which meant that breakage arrived on somebody's phone.
+    name: iOS companion
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Install xcodegen
+        run: brew install xcodegen
+
+      # From the spec, on a runner that has never seen the project file: this is
+      # also the check that generating it works from a clean clone.
+      - name: Generate the project
+        run: ./iOS/generate.sh
+
+      - name: Build
+        # For the simulator, which needs no signing identity or team — the point
+        # is that it compiles, not that this runner could ship it.
+        run: |
+          set -euo pipefail
+          # Output to a file rather than through a formatter: xcodebuild is
+          # loud, and the only lines worth a runner's log are the errors, which
+          # are pulled out if it fails.
+          if ! xcodebuild -project iOS/ReclaimCompanion.xcodeproj \
+            -scheme ReclaimCompanion \
+            -sdk iphonesimulator \
+            -destination 'generic/platform=iOS Simulator' \
+            -derivedDataPath build-ios \
+            CODE_SIGNING_ALLOWED=NO \
+            build > ios-build.txt 2>&1; then
+            grep -E "error:|warning: .* is not in the Xcode project" ios-build.txt | head -30
+            exit 1
+          fi
+          grep -q "BUILD SUCCEEDED" ios-build.txt
+          # The staleness check is only a warning during a build, but on CI a
+          # file missing from the project means the spec and the tree disagree,
+          # and that is worth stopping for.
+          if grep -q "is not in the Xcode project" ios-build.txt; then
+            grep "is not in the Xcode project" ios-build.txt
+            echo "::error::the Xcode project is out of date — run ./iOS/generate.sh" >&2
+            exit 1
+          fi
+
+      - name: Verify the bundle
+        run: |
+          set -euo pipefail
+          plist=build-ios/Build/Products/Debug-iphonesimulator/ReclaimCompanion.app/Info.plist
+          VERSION=$(/usr/libexec/PlistBuddy -c "Print :CFBundleShortVersionString" "$plist")
+          # The version comes from the same VERSION file the Mac app reads, via
+          # Version.xcconfig. Drift between the two apps is the thing that
+          # arrangement exists to prevent, so it is worth failing on.
+          EXPECTED=$(cat VERSION)
+          if [ "$VERSION" != "$EXPECTED" ]; then
+            echo "::error::companion says $VERSION, VERSION says $EXPECTED" >&2
+            exit 1
+          fi
+          # The icon has to survive the asset catalog, and iOS refuses one with
+          # an alpha channel — which a rendering mistake would silently add.
+          test -f build-ios/Build/Products/Debug-iphonesimulator/ReclaimCompanion.app/AppIcon60x60@2x.png
+          echo "companion $VERSION built" >> "$GITHUB_STEP_SUMMARY"
