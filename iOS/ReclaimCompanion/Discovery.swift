@@ -33,6 +33,10 @@ final class Discovery: ObservableObject {
     /// Whether the browser is up. The difference between "no Macs yet" and
     /// "not even looking", which are the same empty list.
     @Published private(set) var isSearching = false
+    /// Whether a refresh is in flight. Held here rather than in a view, so the
+    /// toolbar button, the pull-to-refresh and the buttons on the dead ends are
+    /// all gated by the same thing instead of each keeping its own idea.
+    @Published private(set) var isRefreshing = false
 
     private var browser: NWBrowser?
     private var restarts = 0
@@ -45,18 +49,25 @@ final class Discovery: ObservableObject {
         let browser = NWBrowser(for: .bonjour(type: CompanionAPI.serviceType, domain: nil),
                                 using: parameters)
 
+        // Every callback names the browser it came from, and anything from one
+        // that has since been replaced is dropped. Without that, a cancelled
+        // browser's last word arrives after its replacement is already looking:
+        // `.cancelled` would clear `isSearching` on the live one, and the
+        // screen would say "No Macs found" while a browse was running. That
+        // happens on every quiet restart and every refresh.
         browser.browseResultsChangedHandler = { [weak self] results, _ in
-            Task { @MainActor in self?.adopt(results) }
+            Task { @MainActor in self?.adopt(results, from: browser) }
         }
         browser.stateUpdateHandler = { [weak self] state in
-            Task { @MainActor in self?.adopt(state) }
+            Task { @MainActor in self?.adopt(state, from: browser) }
         }
         browser.start(queue: .main)
         self.browser = browser
         isSearching = true
     }
 
-    private func adopt(_ state: NWBrowser.State) {
+    private func adopt(_ state: NWBrowser.State, from source: NWBrowser) {
+        guard source === browser else { return }
         switch state {
         case .ready:
             failure = nil
@@ -95,6 +106,13 @@ final class Discovery: ObservableObject {
     /// Throws the browser away and starts another. The only cure for a browser
     /// that has failed, and what the refresh on the list does.
     func refresh() async {
+        // One at a time: two overlapping refreshes would each throw away the
+        // other's browser, and the second would be looking through the first's
+        // waiting period.
+        guard !isRefreshing else { return }
+        isRefreshing = true
+        defer { isRefreshing = false }
+
         restarts = 0
         failure = nil
         begin()
@@ -109,12 +127,16 @@ final class Discovery: ObservableObject {
     }
 
     func stop() {
-        browser?.cancel()
+        // Cleared before cancelling, so the outgoing browser's `.cancelled`
+        // has nothing to match against and is dropped by the guard above.
+        let outgoing = browser
         browser = nil
+        outgoing?.cancel()
         isSearching = false
     }
 
-    private func adopt(_ results: Set<NWBrowser.Result>) {
+    private func adopt(_ results: Set<NWBrowser.Result>, from source: NWBrowser) {
+        guard source === browser else { return }
         macs = results.compactMap { result in
             guard case .service(let name, _, _, _) = result.endpoint else { return nil }
             // The TXT name is what the Mac calls itself; the instance name is

@@ -4,7 +4,6 @@ import SwiftUI
 /// The Macs on this network, which is where the app starts.
 struct MacsView: View {
     @StateObject private var discovery = Discovery()
-    @State private var refreshing = false
 
     var body: some View {
         NavigationStack {
@@ -20,12 +19,13 @@ struct MacsView: View {
             .toolbarBackground(Theme.panel, for: .navigationBar)
             .toolbar {
                 ToolbarItem(placement: .topBarTrailing) {
-                    Button {
-                        Task { await discovery.refresh() }
-                    } label: {
+                    // Through the same call as every other way of refreshing,
+                    // and gated by the same flag: two of them overlapping would
+                    // each throw away the other's browser.
+                    Button { refresh() } label: {
                         Image(systemName: "arrow.clockwise")
                     }
-                    .disabled(refreshing)
+                    .disabled(discovery.isRefreshing)
                 }
             }
         }
@@ -48,7 +48,7 @@ struct MacsView: View {
                    detail: "Open Reclaim on your Mac and turn on "
                        + "Settings → Companion → Answer on this network. "
                        + "Both devices have to be on the same Wi-Fi.",
-                   busy: discovery.isSearching && !refreshing,
+                   busy: discovery.isSearching,
                    action: ("Look Again", { refresh() }))
         } else {
             List(discovery.macs) { mac in
@@ -83,13 +83,10 @@ struct MacsView: View {
 }
 
 private extension MacsView {
+    /// Every way of asking to look again goes through here; `Discovery` decides
+    /// whether one is already in flight.
     func refresh() {
-        guard !refreshing else { return }
-        refreshing = true
-        Task {
-            await discovery.refresh()
-            refreshing = false
-        }
+        Task { await discovery.refresh() }
     }
 }
 
