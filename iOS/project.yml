@@ -21,7 +21,9 @@ targets:
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.appler.reclaim.companion
-        MARKETING_VERSION: "0.4.3"
+        # MARKETING_VERSION is not here: it comes from Version.xcconfig, which
+        # Scripts/set_version.sh writes from the root VERSION file. Two places
+        # to type a version number is one place to forget one.
         CURRENT_PROJECT_VERSION: 1
         SWIFT_VERSION: "5.0"
         TARGETED_DEVICE_FAMILY: "1,2"
@@ -38,6 +40,12 @@ targets:
       path: ReclaimCompanion/Info.plist
       properties:
         CFBundleDisplayName: Reclaim
+        # Left as build-setting references rather than literals: xcodegen fills
+        # this plist in once, and a version written here would be the stale copy
+        # the whole arrangement exists to avoid. MARKETING_VERSION comes from
+        # Version.xcconfig, which Scripts/set_version.sh writes from VERSION.
+        CFBundleShortVersionString: $(MARKETING_VERSION)
+        CFBundleVersion: $(CURRENT_PROJECT_VERSION)
         UILaunchScreen: {}
         UIUserInterfaceStyle: Dark
         # iPhone keeps the three a phone actually rotates to — iOS ignores
