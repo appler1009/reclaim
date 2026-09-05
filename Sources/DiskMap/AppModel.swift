@@ -10,6 +10,12 @@ final class AppModel: ObservableObject {
         case failed(String)
     }
 
+    /// Identifies this tab to anything outside the app — the companion, which
+    /// has no window to point at. Made here rather than derived from the window
+    /// or the target: a window arrives later than its model, and two tabs can be
+    /// scanning the same folder.
+    let tabID = UUID().uuidString
+
     @Published var phase: Phase = .idle
     @Published var progress = ScanProgress(filesScanned: 0, bytesScanned: 0, currentPath: "")
     @Published var scanRoot: FileItem?
@@ -113,7 +119,7 @@ final class AppModel: ObservableObject {
         refreshRecentScans()
         hasFullDiskAccess = Self.probeFullDiskAccess()
         // So the watchlist can leave this window's own target to it.
-        ScanWindows.register(self)
+        LiveTabs.register(self)
         Log.info("full disk access probed", ["fullDiskAccess": "\(hasFullDiskAccess)"])
         // An unattended scan of the watchlist writes history this window knows
         // nothing about; its start screen should still show it.

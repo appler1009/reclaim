@@ -1,4 +1,5 @@
 import AppKit
+import ReclaimKit
 
 protocol TreemapViewDelegate: AnyObject {
     func treemap(_ view: TreemapView, didHover cell: TreemapCell?)

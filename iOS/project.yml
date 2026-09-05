@@ -1,0 +1,45 @@
+name: ReclaimCompanion
+options:
+  bundleIdPrefix: com.appler
+  deploymentTarget:
+    iOS: "17.0"
+  createIntermediateGroups: true
+packages:
+  # The Mac app's package, for ReclaimKit: both halves compile the same wire
+  # types, so an endpoint that changes shape breaks this build too.
+  Reclaim:
+    path: ..
+targets:
+  ReclaimCompanion:
+    type: application
+    platform: iOS
+    sources:
+      - path: ReclaimCompanion
+    dependencies:
+      - package: Reclaim
+        product: ReclaimKit
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.appler.reclaim.companion
+        MARKETING_VERSION: "0.4.3"
+        CURRENT_PROJECT_VERSION: 1
+        SWIFT_VERSION: "5.0"
+        TARGETED_DEVICE_FAMILY: "1,2"
+        # Ad-hoc signed, like the Mac app: whoever builds this signs as
+        # themselves, and a simulator build needs no identity at all.
+        CODE_SIGN_STYLE: Automatic
+    info:
+      path: ReclaimCompanion/Info.plist
+      properties:
+        CFBundleDisplayName: Reclaim
+        UILaunchScreen: {}
+        UIUserInterfaceStyle: Dark
+        UISupportedInterfaceOrientations:
+          - UIInterfaceOrientationPortrait
+          - UIInterfaceOrientationLandscapeLeft
+          - UIInterfaceOrientationLandscapeRight
+        # Both are needed to find a Mac at all: iOS refuses mDNS unless the
+        # service is listed, and refuses the local network without a reason.
+        NSBonjourServices:
+          - _reclaim._tcp
+        NSLocalNetworkUsageDescription: Reclaim finds your Mac on this network to show what its open scans are showing.

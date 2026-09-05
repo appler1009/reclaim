@@ -1,4 +1,5 @@
 import Foundation
+import ReclaimKit
 
 /// Speaks MCP over JSON-RPC, so a local agent can ask what is on the disk.
 ///

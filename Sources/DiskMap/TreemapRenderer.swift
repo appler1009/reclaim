@@ -1,4 +1,5 @@
 import AppKit
+import ReclaimKit
 
 /// Draws a laid-out treemap into a context.
 ///

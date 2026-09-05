@@ -34,48 +34,13 @@ enum UnattendedScan {
     }
 }
 
-/// The scan windows that are open, so the watchlist can leave a target to one.
-///
-/// Both schedules fire at the same hour and the claim decides between them by
-/// whoever gets there first — which, for a target a window is showing, is the
-/// wrong way round: an unattended scan writes history and nothing else, so the
-/// window keeps the tree it drew yesterday and its own rescan is skipped
-/// because the claim has gone. A window that could refresh itself is the better
-/// runner for its own target, and the watchlist stands aside for it.
-@MainActor
-enum ScanWindows {
-    private struct Weak { weak var model: AppModel? }
-    private static var registered: [Weak] = []
-
-    static func register(_ model: AppModel) {
-        registered.removeAll { $0.model == nil }
-        guard !registered.contains(where: { $0.model === model }) else { return }
-        registered.append(Weak(model: model))
-    }
-
-    /// Whether an open window is showing `target` and is in a state to rescan
-    /// it tonight. A window holding items picked for the Trash is not, and the
-    /// watchlist takes that target itself rather than let the night pass.
-    static func canRescan(_ target: String) -> Bool {
-        let target = TargetPath.normalise(target)
-        return registered.contains { box in
-            guard let model = box.model, model.canRescanUnattended,
-                  let showing = model.scannedURL?.path else { return false }
-            return TargetPath.normalise(showing) == target
-        }
-    }
-
-    /// Only for tests, which must not inherit windows from another test.
-    static func forgetAll() { registered.removeAll() }
-}
-
 /// Runs the watchlist overnight, on behalf of the app rather than a window.
 ///
 /// The per-window schedule can only refresh what somebody left open; this one
 /// answers to the list instead, so a target gains a point a night whether or
 /// not it was looked at. It shares `NightlyRescan`'s clock, and no target is
 /// scanned twice in one night: a window that will refresh a target itself
-/// keeps it (see `ScanWindows`), and the claim settles anything left over —
+/// keeps it (see `LiveTabs`), and the claim settles anything left over —
 /// a target whose window cannot rescan it, or one already run tonight.
 ///
 /// Still in-app: nothing runs while Reclaim is closed, which is a deliberate
@@ -111,7 +76,7 @@ final class WatchlistRescan {
         self.watchlist = watchlist
         self.schedule = schedule
         self.scan = scan
-        self.windowWillHandle = windowWillHandle ?? { ScanWindows.canRescan($0) }
+        self.windowWillHandle = windowWillHandle ?? { LiveTabs.canRescan($0) }
         self.dispatch = dispatch ?? { work in Self.queue.async(execute: work) }
         schedule.action = { [weak self] in self?.runDue() }
         schedule.isArmed = !watchlist.targets.isEmpty

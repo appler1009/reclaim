@@ -1,4 +1,5 @@
 import Foundation
+import ReclaimKit
 
 /// A node in the scanned file hierarchy.
 ///
@@ -167,18 +168,4 @@ final class FileItem {
 enum SizeMeasure: String, CaseIterable, Codable {
     case physical, logical
     var label: String { self == .physical ? "Size on disk" : "Logical size" }
-}
-
-enum ByteFormat {
-    static func string(_ bytes: UInt64) -> String {
-        let units = ["B", "KB", "MB", "GB", "TB", "PB"]
-        var value = Double(bytes)
-        var unit = 0
-        while value >= 1024 && unit < units.count - 1 {
-            value /= 1024
-            unit += 1
-        }
-        if unit == 0 { return "\(bytes) B" }
-        return String(format: value >= 100 ? "%.0f %@" : "%.1f %@", value, units[unit])
-    }
 }
