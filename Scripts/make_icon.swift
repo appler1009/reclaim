@@ -27,7 +27,12 @@ let tiles: [Tile] = [
     Tile(x: 0.66, y: 0.58, w: 0.34, h: 0.42, color: NSColor(srgbRed: 0.45, green: 0.50, blue: 0.60, alpha: 1)),
 ]
 
-func render(size: Int, rounded: Bool = true) -> Data? {
+/// How much of an iOS icon's width its corner radius is. iOS masks the square
+/// it is given with this, so a border has to be drawn on the same curve or the
+/// mask cuts through it.
+let iOSCornerFraction: CGFloat = 0.2237
+
+func render(size: Int, rounded: Bool = true, border: NSColor? = nil) -> Data? {
     let dimension = CGFloat(size)
     guard let context = CGContext(data: nil, width: size, height: size, bitsPerComponent: 8,
                                   bytesPerRow: 0, space: CGColorSpaceCreateDeviceRGB(),
@@ -39,7 +44,8 @@ func render(size: Int, rounded: Bool = true) -> Data? {
     // The tiles are the icon: they run to the edge of the rounded square, with no
     // frame or backing colour around them, and they meet each other exactly — the
     // same way the map inside the app does.
-    let board = CGRect(x: 0, y: 0, width: dimension, height: dimension)
+    let square = CGRect(x: 0, y: 0, width: dimension, height: dimension)
+    var board = square
     if rounded {
         let radius = dimension * 0.22
         context.addPath(CGPath(roundedRect: board, cornerWidth: radius, cornerHeight: radius,
@@ -47,9 +53,27 @@ func render(size: Int, rounded: Bool = true) -> Data? {
         context.clip()
     }
 
+    // A rim, when one is asked for, is the ground rather than a stroke laid on
+    // top: the whole square is painted with it and the artwork is inset into a
+    // rounded well. Drawn as a stroke instead, it would have to follow the same
+    // curve iOS masks with — and iOS masks with a squircle, not the circular
+    // corner Core Graphics draws, so the tiles leaked past it at the corners.
+    // This way any disagreement between the two curves is rim, which is what
+    // the eye expects to find at the edge of an icon anyway.
+    if let border {
+        context.setFillColor(border.cgColor)
+        context.fill(square)
+        let width = dimension * 0.022
+        board = square.insetBy(dx: width, dy: width)
+        let radius = max(0, dimension * iOSCornerFraction - width)
+        context.addPath(CGPath(roundedRect: board, cornerWidth: radius, cornerHeight: radius,
+                               transform: nil))
+        context.clip()
+    }
+
     for tile in tiles {
-        let rect = CGRect(x: tile.x * board.width,
-                          y: tile.y * board.height,
+        let rect = CGRect(x: board.minX + tile.x * board.width,
+                          y: board.minY + tile.y * board.height,
                           width: tile.w * board.width,
                           height: tile.h * board.height)
         context.setFillColor(tile.color.cgColor)
@@ -70,7 +94,11 @@ func render(size: Int, rounded: Bool = true) -> Data? {
 }
 
 if wantsIOS {
-    if let data = render(size: 1024, rounded: false) {
+    // Square and opaque, with the rim drawn in: iOS applies its own mask and
+    // will not take an icon with any alpha, so the edge has to be artwork.
+    // Opaque white: the bitmap has no alpha channel to blend against, so a
+    // translucent white would simply come out grey.
+    if let data = render(size: 1024, rounded: false, border: NSColor(white: 1, alpha: 1)) {
         try? data.write(to: URL(fileURLWithPath: output))
         print("iOS icon written to \(output)")
     }
