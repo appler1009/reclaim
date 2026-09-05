@@ -1,4 +1,5 @@
 import AppKit
+import ReclaimKit
 import QuartzCore
 import SwiftUI
 
@@ -917,8 +918,13 @@ private struct VolumeCard: View {
                     Text(ByteFormat.string(volume.used))
                         .font(.system(size: 11, weight: .semibold)).monospacedDigit()
                         .foregroundStyle(.white.opacity(0.85))
-                    Text("used of \(ByteFormat.string(volume.capacity))")
-                        .font(.system(size: 11)).foregroundStyle(.white.opacity(0.42))
+                    // "/ 228 GB" rather than "used of 228 GB": in a card this
+                    // narrow the words wrapped onto a second line, and a
+                    // fraction reads the same way without them.
+                    Text("/ \(ByteFormat.string(volume.capacity))")
+                        .font(.system(size: 11)).monospacedDigit()
+                        .foregroundStyle(.white.opacity(0.42))
+                        .fixedSize()
                     Spacer()
                     Text("\(ByteFormat.string(volume.available)) free")
                         .font(.system(size: 11)).monospacedDigit()

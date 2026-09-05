@@ -1,4 +1,5 @@
 import CoreGraphics
+import ReclaimKit
 import Foundation
 
 /// Terminal entry points, mostly for verifying the scanner without the UI:

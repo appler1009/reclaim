@@ -1,4 +1,5 @@
 import Foundation
+import ReclaimKit
 
 /// The state of the volume a target sits on, at the moment a scan finished.
 ///

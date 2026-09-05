@@ -1,4 +1,5 @@
 import SwiftUI
+import ReclaimKit
 
 @main
 struct DiskMapApp: App {
@@ -257,6 +258,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         } catch {
             Log.error("could not start mcp server", ["error": error.localizedDescription])
         }
+        // Only if the user left it on. This is the one server that leaves the
+        // machine, so it never starts on its own.
+        CompanionService.shared.startIfEnabled()
         watchlist = WatchlistRescan()
         styleWindows()
         sizeGuard = WindowSizeGuard(defaultSize: NSSize(width: 1320, height: 860))
@@ -275,6 +279,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     func applicationWillTerminate(_ notification: Notification) {
         mcp.stop()
+        CompanionService.shared.stop()
     }
 
     var mcpURL: String { mcp.url }

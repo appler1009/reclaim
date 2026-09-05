@@ -1,0 +1,14 @@
+// Signing for the companion app.
+//
+// No team here on purpose, the same way `Scripts/build_app.sh` sets none for
+// the Mac app: whoever builds this signs as themselves, and a team hard-coded
+// into the repository is one every other person has to edit out.
+//
+// A simulator build needs no identity at all. For a device build, put your own
+// team in `iOS/Local.xcconfig`, which git ignores:
+//
+//     DEVELOPMENT_TEAM = XXXXXXXXXX
+//
+// The `?` is what makes it optional — without the file, this include is
+// skipped rather than failing the build.
+#include? "Local.xcconfig"

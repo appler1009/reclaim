@@ -1,4 +1,5 @@
 import AppKit
+import ReclaimKit
 import SwiftUI
 
 /// The app's preferences, reached with ⌘,.
@@ -6,6 +7,7 @@ struct SettingsView: View {
     @AppStorage(NightlyRescan.enabledKey) private var nightlyEnabled = false
     @AppStorage(NightlyRescan.hourKey) private var nightlyHour = NightlyRescan.defaultHour
     @ObservedObject private var watchlist = Watchlist.shared
+    @ObservedObject private var companion = CompanionService.shared
     @State private var volumes: [VolumeInfo] = []
 
     var body: some View {
@@ -80,6 +82,19 @@ struct SettingsView: View {
                     }
                 }
             }
+
+            Section {
+                CompanionSection(companion: companion)
+            } header: {
+                Text("Companion")
+            } footer: {
+                Text("With this on, Reclaim answers on your local network so the iPhone "
+                     + "app can show what your open tabs are showing, and an agent on a "
+                     + "paired device can ask the same questions one on this Mac can. "
+                     + "A device gets in once, by typing a code shown here. "
+                     + "The address on this Mac stays open to this Mac either way.")
+                    .settingsFootnote()
+            }
         }
         .formStyle(.grouped)
         .frame(width: 480)
@@ -117,6 +132,109 @@ struct SettingsView: View {
         formatter.locale = .current
         formatter.setLocalizedDateFormatFromTemplate("jmm")
         return formatter.string(from: date)
+    }
+}
+
+/// Turning the network service on, offering a code, and the devices already let in.
+private struct CompanionSection: View {
+    @ObservedObject var companion: CompanionService
+    @ObservedObject private var paired: PairedDevices
+    @State private var enabled: Bool
+
+    init(companion: CompanionService) {
+        self.companion = companion
+        self.paired = companion.paired
+        // Read once from defaults rather than through @AppStorage: the toggle
+        // has to start and stop a server, not only write a flag, so the service
+        // is the one that owns this setting.
+        _enabled = State(initialValue: companion.isEnabled)
+    }
+
+    var body: some View {
+        Toggle("Answer on this network", isOn: $enabled)
+            .onChange(of: enabled) { _, on in companion.setEnabled(on) }
+
+        if let failure = companion.failure {
+            Label(failure, systemImage: "exclamationmark.triangle")
+                .font(.callout)
+                .foregroundStyle(Color.caution)
+        }
+
+        if companion.isRunning {
+            LabeledContent("Address") {
+                Text(companion.address)
+                    .font(.callout.monospaced())
+                    .textSelection(.enabled)
+            }
+        }
+
+        if let offer = companion.offer, offer.isOpen() {
+            VStack(alignment: .leading, spacing: 6) {
+                Text(spaced(offer.code))
+                    .font(.system(size: 30, weight: .semibold, design: .monospaced))
+                    .textSelection(.enabled)
+                Text("Type this in the Reclaim app on your phone. It lasts three "
+                     + "minutes and pairs one device.")
+                    .settingsFootnote()
+                Button("Stop Offering") { companion.cancelPairing() }
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+        } else {
+            HStack {
+                Button("Pair a Device…") { companion.offerPairing() }
+                    .disabled(!companion.isRunning)
+                Spacer()
+            }
+        }
+
+        ForEach(paired.devices) { device in
+            PairedRow(device: device) { paired.forget(device) }
+        }
+    }
+
+    /// Read aloud and typed on a phone, so it is grouped rather than run together.
+    private func spaced(_ code: String) -> String {
+        let middle = code.index(code.startIndex, offsetBy: min(3, code.count))
+        return code[..<middle] + " " + code[middle...]
+    }
+}
+
+/// One device that has been let in, and a way to change that.
+private struct PairedRow: View {
+    let device: PairedDevices.Device
+    let forget: () -> Void
+    @State private var hovering = false
+
+    var body: some View {
+        HStack(spacing: 9) {
+            Image(systemName: "iphone")
+                .foregroundStyle(.secondary)
+            VStack(alignment: .leading, spacing: 1) {
+                Text(device.name)
+                Text(subtitle)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+            Spacer(minLength: 8)
+            Button(action: forget) {
+                Image(systemName: "minus.circle.fill")
+                    .foregroundStyle(hovering ? Color.ember : .secondary)
+            }
+            .buttonStyle(.plain)
+            .help("Stop letting \(device.name) in")
+        }
+        .onHover { hovering = $0 }
+    }
+
+    private var subtitle: String {
+        guard let seen = device.lastSeen else { return "paired \(Self.when(device.pairedAt))" }
+        return "last seen \(Self.when(seen))"
+    }
+
+    private static func when(_ date: Date) -> String {
+        let formatter = RelativeDateTimeFormatter()
+        formatter.unitsStyle = .full
+        return formatter.localizedString(for: date, relativeTo: Date())
     }
 }
 

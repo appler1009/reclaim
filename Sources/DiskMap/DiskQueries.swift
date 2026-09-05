@@ -1,4 +1,5 @@
 import Foundation
+import ReclaimKit
 
 /// Answers questions about recorded scans.
 ///
