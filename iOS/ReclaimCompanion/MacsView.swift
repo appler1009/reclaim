@@ -32,11 +32,11 @@ struct MacsView: View {
         } else {
             List(discovery.macs) { mac in
                 NavigationLink(value: mac.id) {
+                    // The Mac's name and nothing else: every row in this list is
+                    // a Mac running Reclaim, so saying so on each of them says
+                    // nothing.
                     Label {
-                        VStack(alignment: .leading, spacing: 2) {
-                            Text(mac.name).font(.headline)
-                            Text("Reclaim").font(.caption).foregroundStyle(.secondary)
-                        }
+                        Text(mac.name).font(.headline)
                     } icon: {
                         Image(systemName: "desktopcomputer").foregroundStyle(Theme.ember)
                     }

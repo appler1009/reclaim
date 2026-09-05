@@ -65,7 +65,8 @@ struct BrowseView: View {
                                : "This is a file, not a folder.")
                         .frame(maxHeight: .infinity)
                 } else {
-                    TreemapCanvas(children: node.children, selected: selected) { child in
+                    TreemapCanvas(children: node.children, selected: selected,
+                                  isResizing: dragStart != nil) { child in
                         selected = child.path
                         drill(child)
                     }
@@ -133,8 +134,9 @@ private struct Summary: View {
     var body: some View {
         HStack(alignment: .firstTextBaseline, spacing: 18) {
             figure(node.human, "in view")
-            figure("\(node.fileCount)", "files")
-            figure("\(node.children.count + node.omittedChildren)", "items here")
+            figure(node.fileCount.formatted(.number), "files")
+            figure((node.children.count + node.omittedChildren).formatted(.number),
+                   "items here")
             Spacer()
         }
         .padding(.horizontal, 16)

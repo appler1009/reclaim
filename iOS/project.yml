@@ -25,17 +25,32 @@ targets:
         CURRENT_PROJECT_VERSION: 1
         SWIFT_VERSION: "5.0"
         TARGETED_DEVICE_FAMILY: "1,2"
-        # Ad-hoc signed, like the Mac app: whoever builds this signs as
-        # themselves, and a simulator build needs no identity at all.
         CODE_SIGN_STYLE: Automatic
+        # The same artwork as the Mac app, from the same generator — see
+        # Scripts/make_icon.swift, which writes the square iOS wants.
+        ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
+    # A device build needs a development team, which is nobody's business but
+    # the builder's. See Signing.xcconfig.
+    configFiles:
+      Debug: Signing.xcconfig
+      Release: Signing.xcconfig
     info:
       path: ReclaimCompanion/Info.plist
       properties:
         CFBundleDisplayName: Reclaim
         UILaunchScreen: {}
         UIUserInterfaceStyle: Dark
+        # iPhone keeps the three a phone actually rotates to — iOS ignores
+        # upside-down on a phone anyway. iPad has to offer all four unless the
+        # app claims it requires full screen, which a companion this small has
+        # no business doing: it should sit in Split View beside anything.
         UISupportedInterfaceOrientations:
           - UIInterfaceOrientationPortrait
+          - UIInterfaceOrientationLandscapeLeft
+          - UIInterfaceOrientationLandscapeRight
+        UISupportedInterfaceOrientations~ipad:
+          - UIInterfaceOrientationPortrait
+          - UIInterfaceOrientationPortraitUpsideDown
           - UIInterfaceOrientationLandscapeLeft
           - UIInterfaceOrientationLandscapeRight
         # Both are needed to find a Mac at all: iOS refuses mDNS unless the

@@ -1,9 +1,16 @@
 // Generates Reclaim's app icon: a dark treemap with one ember-hot tile.
 import AppKit
 
-let outputDirectory = CommandLine.arguments.count > 1 ? CommandLine.arguments[1] : "Reclaim.iconset"
-try? FileManager.default.createDirectory(atPath: outputDirectory,
-                                         withIntermediateDirectories: true)
+// Two shapes of the same artwork. macOS wants a rounded square with the corners
+// already cut and everything outside them transparent; iOS wants a full-bleed
+// opaque square and applies its own mask, and refuses an icon with any alpha at
+// all. So: `make_icon.swift <dir>` writes the iconset, and
+// `make_icon.swift <file.png> --ios` writes the one 1024 square iOS wants.
+let output = CommandLine.arguments.count > 1 ? CommandLine.arguments[1] : "Reclaim.iconset"
+let wantsIOS = CommandLine.arguments.contains("--ios")
+if !wantsIOS {
+    try? FileManager.default.createDirectory(atPath: output, withIntermediateDirectories: true)
+}
 
 struct Tile { let x, y, w, h: CGFloat; let color: NSColor }
 let ember = NSColor(srgbRed: 1.00, green: 0.42, blue: 0.36, alpha: 1)
@@ -20,21 +27,25 @@ let tiles: [Tile] = [
     Tile(x: 0.66, y: 0.58, w: 0.34, h: 0.42, color: NSColor(srgbRed: 0.45, green: 0.50, blue: 0.60, alpha: 1)),
 ]
 
-func render(size: Int) -> Data? {
+func render(size: Int, rounded: Bool = true) -> Data? {
     let dimension = CGFloat(size)
     guard let context = CGContext(data: nil, width: size, height: size, bitsPerComponent: 8,
                                   bytesPerRow: 0, space: CGColorSpaceCreateDeviceRGB(),
-                                  bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue)
+                                  bitmapInfo: rounded
+                                      ? CGImageAlphaInfo.premultipliedLast.rawValue
+                                      : CGImageAlphaInfo.noneSkipLast.rawValue)
     else { return nil }
 
     // The tiles are the icon: they run to the edge of the rounded square, with no
     // frame or backing colour around them, and they meet each other exactly — the
     // same way the map inside the app does.
     let board = CGRect(x: 0, y: 0, width: dimension, height: dimension)
-    let radius = dimension * 0.22
-    context.addPath(CGPath(roundedRect: board, cornerWidth: radius, cornerHeight: radius,
-                           transform: nil))
-    context.clip()
+    if rounded {
+        let radius = dimension * 0.22
+        context.addPath(CGPath(roundedRect: board, cornerWidth: radius, cornerHeight: radius,
+                               transform: nil))
+        context.clip()
+    }
 
     for tile in tiles {
         let rect = CGRect(x: tile.x * board.width,
@@ -58,11 +69,18 @@ func render(size: Int) -> Data? {
     return rep.representation(using: .png, properties: [:])
 }
 
-for (size, name) in [(16, "16x16"), (32, "16x16@2x"), (32, "32x32"), (64, "32x32@2x"),
-                     (128, "128x128"), (256, "128x128@2x"), (256, "256x256"),
-                     (512, "256x256@2x"), (512, "512x512"), (1024, "512x512@2x")] {
-    if let data = render(size: size) {
-        try? data.write(to: URL(fileURLWithPath: "\(outputDirectory)/icon_\(name).png"))
+if wantsIOS {
+    if let data = render(size: 1024, rounded: false) {
+        try? data.write(to: URL(fileURLWithPath: output))
+        print("iOS icon written to \(output)")
     }
+} else {
+    for (size, name) in [(16, "16x16"), (32, "16x16@2x"), (32, "32x32"), (64, "32x32@2x"),
+                         (128, "128x128"), (256, "128x128@2x"), (256, "256x256"),
+                         (512, "256x256@2x"), (512, "512x512"), (1024, "512x512@2x")] {
+        if let data = render(size: size) {
+            try? data.write(to: URL(fileURLWithPath: "\(output)/icon_\(name).png"))
+        }
+    }
+    print("icon written to \(output)")
 }
-print("icon written to \(outputDirectory)")
