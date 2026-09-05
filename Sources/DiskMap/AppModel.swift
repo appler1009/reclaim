@@ -70,6 +70,15 @@ final class AppModel: ObservableObject {
     @Published var hasFullDiskAccess = false
     /// True while a scan is running, including once its first level is on screen.
     @Published var isScanning = false
+    /// The target this window is waiting its turn to scan, when it was restored
+    /// from the last session. Nil the instant the scan starts — a restored tab
+    /// spends a moment in the queue, and the window should say so rather than
+    /// offering a start screen for a scan that is already decided.
+    @Published var queuedTarget: URL?
+    /// Called when a scan stops, however it stopped — finished, cancelled or
+    /// failed. What lets restored tabs take the disk one at a time instead of
+    /// all racing for it at launch.
+    var onScanEnded: (() -> Void)?
     /// The previous scan of this target, if one was ever recorded, and how long
     /// ago it was taken. What makes the app able to say "this grew".
     @Published private(set) var comparison: Snapshot?
@@ -120,6 +129,11 @@ final class AppModel: ObservableObject {
         hasFullDiskAccess = Self.probeFullDiskAccess()
         // So the watchlist can leave this window's own target to it.
         LiveTabs.register(self)
+        // A window made while the last session is being put back is one of its
+        // windows, and takes the next target that session was owed.
+        if let restored = SessionRestore.shared.claimTarget() {
+            SessionRestore.shared.enqueue(self, target: restored)
+        }
         Log.info("full disk access probed", ["fullDiskAccess": "\(hasFullDiskAccess)"])
         // An unattended scan of the watchlist writes history this window knows
         // nothing about; its start screen should still show it.
@@ -252,8 +266,15 @@ final class AppModel: ObservableObject {
     /// Short name for what is being scanned: a volume by its name, otherwise the
     /// folder's own name. The scan root's `name` is a full path, which is too
     /// long for a breadcrumb or a window title.
+    /// What this window is showing, or is about to: a tab waiting its turn in
+    /// the restore queue is already that target's tab, and naming it "New Scan"
+    /// until the scan starts loses the tab bar exactly when it is most useful.
     var scanTargetName: String {
-        guard let url = scannedURL else { return "Reclaim" }
+        guard let url = scannedURL ?? queuedTarget else { return "Reclaim" }
+        return name(forTarget: url)
+    }
+
+    func name(forTarget url: URL) -> String {
         if url.path == "/" {
             return volumes.first { $0.isStartupVolume }?.name ?? "Macintosh HD"
         }
@@ -323,6 +344,7 @@ final class AppModel: ObservableObject {
         // Scanning somewhere else entirely: any folder queued for restoring by a
         // rescan belongs to the previous target and must be dropped.
         if scannedURL != url { pathToRestore = [] }
+        queuedTarget = nil
         scannedURL = url
         scanRoot = nil
         zoomRoot = nil
@@ -335,6 +357,10 @@ final class AppModel: ObservableObject {
         refreshVolumes()
 
         Log.info("scan started", ["path": url.path])
+        // What this window is for has just changed, which is the arrangement
+        // changing. Written down now rather than only at quit, so a crash or a
+        // force-quit does not cost it.
+        SessionRestore.shared.captureIfSettled()
         let startedAt = Date()
         isScanning = true
 
@@ -363,12 +389,14 @@ final class AppModel: ObservableObject {
                     Log.info("scan cancelled", ["path": url.path])
                     self.isScanning = false
                     self.phase = self.scanRoot == nil ? .idle : .ready
+                    self.announceScanEnded()
                     return
                 }
                 guard let root else {
                     Log.error("scan failed", ["path": url.path])
                     self.isScanning = false
                     self.phase = .failed("Could not read \(url.path)")
+                    self.announceScanEnded()
                     return
                 }
                 self.scanRoot = root
@@ -383,6 +411,7 @@ final class AppModel: ObservableObject {
                 self.recordHistory(root: root, target: url.path)
                 self.nightly.isArmed = true
                 self.startNavigationStressIfRequested()
+                self.announceScanEnded()
                 Log.info("scan finished", [
                     "path": url.path,
                     "seconds": String(format: "%.2f", Date().timeIntervalSince(startedAt)),
@@ -392,6 +421,16 @@ final class AppModel: ObservableObject {
                 ])
             }
         }
+    }
+
+    /// Tells whoever is waiting that the disk is free again, once.
+    ///
+    /// Cleared as it fires: the waiter is a queue that wants the next scan, not
+    /// this window's every future scan.
+    private func announceScanEnded() {
+        let ended = onScanEnded
+        onScanEnded = nil
+        ended?()
     }
 
     /// Files this scan into the target's history, and keeps the previous one to
@@ -513,6 +552,11 @@ final class AppModel: ObservableObject {
         session?.cancel()
         session = nil
         phase = scanRoot == nil ? .idle : .ready
+        // Announced here rather than left to the scan's own completion: that
+        // path checks it is still the current session, which cancelling has
+        // just made false, so it returns without a word. Anything waiting for
+        // this scan to end — the restore queue — would wait for ever.
+        announceScanEnded()
     }
 
     /// Whether tonight's scheduled rescan can go ahead.

@@ -9,6 +9,9 @@ struct DiskMapApp: App {
         CLI.runIfRequested()
         // Before any scene is created, so the model's first logs are not dropped.
         Log.start()
+        // Also before any scene: the first window's model claims its target as
+        // it is built, which is earlier than the delegate is told anything.
+        SessionRestore.shared.loadPlan()
         WindowSizeGuard.discardOversizedSavedFrames()
     }
 
@@ -261,6 +264,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // Only if the user left it on. This is the one server that leaves the
         // machine, so it never starts on its own.
         CompanionService.shared.startIfEnabled()
+        // The window the app opened by itself already has the first target; the
+        // rest of the arrangement is asked for here.
+        SessionRestore.shared.openWindows {
+            SessionRestore.shared.finish()
+        }
         watchlist = WatchlistRescan()
         styleWindows()
         sizeGuard = WindowSizeGuard(defaultSize: NSSize(width: 1320, height: 860))
@@ -278,6 +286,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     func applicationWillTerminate(_ notification: Notification) {
+        // Last thing that is true about this run: what was open when it ended.
+        SessionRestore.shared.captureOpenWindows()
         mcp.stop()
         CompanionService.shared.stop()
     }

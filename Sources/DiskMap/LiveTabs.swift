@@ -69,10 +69,13 @@ enum LiveTabs {
             error = message
         }
 
+        // A tab waiting its turn after a restart is already that target's tab,
+        // and says so rather than showing up on the phone as "New Scan".
+        let named = root != nil || model.isScanning || model.queuedTarget != nil
         return CompanionAPI.TabSummary(
             id: model.tabID,
-            title: root == nil && !model.isScanning ? "New Scan" : model.scanTargetName,
-            target: model.scannedURL?.path ?? "",
+            title: named ? model.scanTargetName : "New Scan",
+            target: (model.scannedURL ?? model.queuedTarget)?.path ?? "",
             phase: phase,
             isScanning: model.isScanning,
             progress: model.isScanning ? model.scanCompletion.fraction : nil,
