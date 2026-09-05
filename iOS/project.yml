@@ -38,12 +38,16 @@ targets:
       # Xcode reload it mid-build, which is a worse cure than the disease.
       - name: Check the project is current
         basedOnDependencyAnalysis: false
-        # Piped rather than a here-string: a build phase runs under /bin/sh,
-        # which has no process substitution.
+        # Matched against the form xcodegen writes — `path = Foo.swift;` — and
+        # not against the bare name: a loose search finds `App.swift` inside
+        # `ReclaimCompanionApp.swift` and calls a genuinely missing file
+        # present. Piped rather than a here-string, because a build phase runs
+        # under /bin/sh, which has no process substitution.
         script: |
           cd "$SRCROOT"
           find ReclaimCompanion -name '*.swift' | while read -r file; do
-            if ! grep -q "$(basename "$file")" ReclaimCompanion.xcodeproj/project.pbxproj; then
+            base=$(basename "$file")
+            if ! grep -qE "path = \"?$base\"?;" ReclaimCompanion.xcodeproj/project.pbxproj; then
               echo "warning: $file is not in the Xcode project — run ./iOS/generate.sh"
             fi
           done
