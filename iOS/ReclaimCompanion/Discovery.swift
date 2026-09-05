@@ -20,45 +20,123 @@ struct DiscoveredMac: Identifiable, Equatable {
 /// without anyone pulling to refresh.
 @MainActor
 final class Discovery: ObservableObject {
+    /// How many times a browse that failed is quietly started again before the
+    /// person holding the phone is told about it. Wi-Fi drops, the app comes
+    /// back from the background and the browser is defunct — all of it is
+    /// ordinary, and none of it is worth a screen of red text.
+    static let restartsBeforeComplaining = 3
+
     @Published private(set) var macs: [DiscoveredMac] = []
-    /// Set when iOS refuses the browse — nearly always the local-network
-    /// permission having been declined, which no amount of retrying fixes.
+    /// Set only when looking has actually stopped and will not resume on its
+    /// own. A browse that is merely waiting is still looking.
     @Published private(set) var failure: String?
+    /// Whether the browser is up. The difference between "no Macs yet" and
+    /// "not even looking", which are the same empty list.
+    @Published private(set) var isSearching = false
+    /// Whether a refresh is in flight. Held here rather than in a view, so the
+    /// toolbar button, the pull-to-refresh and the buttons on the dead ends are
+    /// all gated by the same thing instead of each keeping its own idea.
+    @Published private(set) var isRefreshing = false
 
     private var browser: NWBrowser?
+    private var restarts = 0
 
     func start() {
         guard browser == nil else { return }
+        failure = nil
         let parameters = NWParameters()
         parameters.includePeerToPeer = false
         let browser = NWBrowser(for: .bonjour(type: CompanionAPI.serviceType, domain: nil),
                                 using: parameters)
 
+        // Every callback names the browser it came from, and anything from one
+        // that has since been replaced is dropped. Without that, a cancelled
+        // browser's last word arrives after its replacement is already looking:
+        // `.cancelled` would clear `isSearching` on the live one, and the
+        // screen would say "No Macs found" while a browse was running. That
+        // happens on every quiet restart and every refresh.
         browser.browseResultsChangedHandler = { [weak self] results, _ in
-            Task { @MainActor in self?.adopt(results) }
+            Task { @MainActor in self?.adopt(results, from: browser) }
         }
         browser.stateUpdateHandler = { [weak self] state in
-            Task { @MainActor in
-                switch state {
-                case .ready:
-                    self?.failure = nil
-                case .failed(let error), .waiting(let error):
-                    self?.failure = Self.explain(error)
-                default:
-                    break
-                }
-            }
+            Task { @MainActor in self?.adopt(state, from: browser) }
         }
         browser.start(queue: .main)
         self.browser = browser
+        isSearching = true
+    }
+
+    private func adopt(_ state: NWBrowser.State, from source: NWBrowser) {
+        guard source === browser else { return }
+        switch state {
+        case .ready:
+            failure = nil
+            isSearching = true
+            // A browse that got going is not owed the restarts an earlier one
+            // used up.
+            restarts = 0
+
+        case .waiting(let error):
+            // Waiting is not failing: the browser holds on and retries by
+            // itself, and saying "cannot look for Macs" over a Wi-Fi hiccup
+            // would be wrong the moment it is printed. The exception is
+            // permission, which no amount of waiting resolves.
+            isSearching = true
+            failure = Self.isPermissionDenied(error) ? Self.explain(error) : nil
+
+        case .failed(let error):
+            guard !Self.isPermissionDenied(error),
+                  restarts < Self.restartsBeforeComplaining else {
+                isSearching = false
+                failure = Self.explain(error)
+                return
+            }
+            // A defunct browser cannot be revived; it can only be replaced.
+            restarts += 1
+            begin()
+
+        case .cancelled:
+            isSearching = false
+
+        default:
+            break
+        }
+    }
+
+    /// Throws the browser away and starts another. The only cure for a browser
+    /// that has failed, and what the refresh on the list does.
+    func refresh() async {
+        // One at a time: two overlapping refreshes would each throw away the
+        // other's browser, and the second would be looking through the first's
+        // waiting period.
+        guard !isRefreshing else { return }
+        isRefreshing = true
+        defer { isRefreshing = false }
+
+        restarts = 0
+        failure = nil
+        begin()
+        // Long enough for the network to answer, so a pull-to-refresh that
+        // finds something does not snap shut before it appears.
+        try? await Task.sleep(nanoseconds: 1_200_000_000)
+    }
+
+    private func begin() {
+        stop()
+        start()
     }
 
     func stop() {
-        browser?.cancel()
+        // Cleared before cancelling, so the outgoing browser's `.cancelled`
+        // has nothing to match against and is dropped by the guard above.
+        let outgoing = browser
         browser = nil
+        outgoing?.cancel()
+        isSearching = false
     }
 
-    private func adopt(_ results: Set<NWBrowser.Result>) {
+    private func adopt(_ results: Set<NWBrowser.Result>, from source: NWBrowser) {
+        guard source === browser else { return }
         macs = results.compactMap { result in
             guard case .service(let name, _, _, _) = result.endpoint else { return nil }
             // The TXT name is what the Mac calls itself; the instance name is
@@ -73,8 +151,14 @@ final class Discovery: ObservableObject {
         .sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
     }
 
+    /// The one failure retrying cannot fix, and the one worth different words.
+    private static func isPermissionDenied(_ error: NWError) -> Bool {
+        if case .dns(let code) = error, code == kDNSServiceErr_PolicyDenied { return true }
+        return false
+    }
+
     private static func explain(_ error: NWError) -> String {
-        if case .dns(let code) = error, code == kDNSServiceErr_PolicyDenied {
+        if isPermissionDenied(error) {
             return "Reclaim is not allowed to use the local network. "
                 + "Turn it on in Settings → Reclaim → Local Network."
         }
