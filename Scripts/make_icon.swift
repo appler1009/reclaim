@@ -63,7 +63,9 @@ func render(size: Int, rounded: Bool = true, border: NSColor? = nil) -> Data? {
     if let border {
         context.setFillColor(border.cgColor)
         context.fill(square)
-        let width = dimension * 0.022
+        // A fraction of the icon rather than a fixed number of pixels: the same
+        // rim has to read at 1024 and at the 40 points a home screen gives it.
+        let width = dimension * 0.04
         board = square.insetBy(dx: width, dy: width)
         let radius = max(0, dimension * iOSCornerFraction - width)
         context.addPath(CGPath(roundedRect: board, cornerWidth: radius, cornerHeight: radius,
