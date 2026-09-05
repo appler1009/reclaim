@@ -1,4 +1,5 @@
 import Foundation
+import Network
 import ReclaimKit
 import Testing
 @testable import DiskMap
@@ -215,6 +216,18 @@ struct CompanionRouterTests {
         #expect(node.path == "/tmp/a folder")
     }
 
+    @Test func aFolderNamedWithQuerySeparatorsIsStillFound() throws {
+        let service = isolatedService()
+        let model = sampleTab(target: "/tmp/a+b&c")
+        let token = service.paired.admit(name: "Phone")
+        let encoded = "/tmp/a%2Bb%26c"
+        let response = CompanionRouter.respond(
+            to: get("/api/v1/tabs/\(model.tabID)/node?path=\(encoded)", token: token),
+            service: service)
+        let node = try decode(CompanionAPI.Node.self, response)
+        #expect(node.path == "/tmp/a+b&c")
+    }
+
     @Test func aClosedTabIsNotFound() {
         let service = isolatedService()
         let token = service.paired.admit(name: "Phone")
@@ -232,20 +245,23 @@ struct CompanionRouterTests {
         #expect(response.status == "409 Conflict")
     }
 
-    @Test func mcpIsServedToPairedDevicesOnly() {
+    /// MCP is not served here at all, paired or not.
+    ///
+    /// This port is cleartext on every interface and the bearer travels on it
+    /// in the clear. Read access to the tabs is what the user switched on;
+    /// `scan_now`, which reads any path it is given and writes the result into
+    /// history, is not, and it stays where an agent is already on the machine.
+    @Test func mcpIsNotOnTheNetworkPortEvenForAPairedDevice() {
         let service = isolatedService()
-        let unauthorised = CompanionRouter.respond(to: post("/mcp", #"{"method":"ping","id":1}"#),
-                                                   service: service)
-        #expect(unauthorised.status == "401 Unauthorized")
-
         let token = service.paired.admit(name: "Phone")
-        var request = post("/mcp", #"{"jsonrpc":"2.0","method":"ping","id":1}"#)
-        request = HTTPListener.Request(method: "POST", target: "/mcp",
-                                       headers: ["authorization": "Bearer \(token)"],
-                                       body: request.body)
+        let request = HTTPListener.Request(
+            method: "POST", target: "/mcp",
+            headers: ["authorization": "Bearer \(token)"],
+            body: Data(#"{"jsonrpc":"2.0","method":"ping","id":1}"#.utf8))
+
         let response = CompanionRouter.respond(to: request, service: service)
-        #expect(response.status == "200 OK")
-        #expect(String(decoding: response.body, as: UTF8.self).contains("\"result\""))
+        #expect(response.status == "404 Not Found")
+        #expect(!String(decoding: response.body, as: UTF8.self).contains("result"))
     }
 
     @Test func anUnknownEndpointSaysWhichOne() {
@@ -346,14 +362,69 @@ struct PairingTests {
 
 @Suite("HTTP parsing")
 struct HTTPListenerTests {
+    /// The parsed request, or nil for anything that is not one yet.
     private func parse(_ text: String) -> HTTPListener.Request? {
-        HTTPListener.parse(Data(text.utf8))
+        guard case .ready(let request) = HTTPListener.parse(Data(text.utf8)) else { return nil }
+        return request
+    }
+
+    /// The refusal, for input that will never become a request.
+    private func refusal(_ text: String) -> HTTPListener.Response? {
+        guard case .rejected(let response) = HTTPListener.parse(Data(text.utf8)) else { return nil }
+        return response
+    }
+
+    private func isIncomplete(_ text: String) -> Bool {
+        if case .incomplete = HTTPListener.parse(Data(text.utf8)) { return true }
+        return false
     }
 
     @Test func aRequestIsHeldBackUntilItsBodyHasArrived() throws {
-        #expect(parse("POST /mcp HTTP/1.1\r\nContent-Length: 5\r\n\r\nab") == nil)
+        #expect(isIncomplete("POST /mcp HTTP/1.1\r\nContent-Length: 5\r\n\r\nab"))
         let whole = try #require(parse("POST /mcp HTTP/1.1\r\nContent-Length: 5\r\n\r\nabcde"))
         #expect(String(decoding: whole.body, as: UTF8.self) == "abcde")
+    }
+
+    /// This listener answers on every interface, before any pairing check, so
+    /// the numbers in a stranger's headers are arithmetic waiting to go wrong.
+    /// `Int("-1")` is -1, `count >= -1` is true, and `prefix(-1)` traps: one
+    /// header took the whole process down.
+    @Test func aNegativeContentLengthIsRefusedRatherThanTrusted() throws {
+        let response = try #require(refusal("POST /mcp HTTP/1.1\r\nContent-Length: -1\r\n\r\n"))
+        #expect(response.status == "400 Bad Request")
+    }
+
+    @Test func aContentLengthThatIsNotANumberIsRefused() throws {
+        #expect(refusal("POST /mcp HTTP/1.1\r\nContent-Length: abc\r\n\r\n")?.status
+                == "400 Bad Request")
+        #expect(refusal("POST /mcp HTTP/1.1\r\nContent-Length: 99999999999999999999\r\n\r\n")?
+            .status == "400 Bad Request")
+    }
+
+    @Test func anEnormousDeclaredBodyIsRefusedBeforeItIsWaitedFor() throws {
+        let response = try #require(
+            refusal("POST /mcp HTTP/1.1\r\nContent-Length: \(HTTPListener.Limit.bodyBytes + 1)\r\n\r\n"))
+        #expect(response.status == "413 Payload Too Large")
+    }
+
+    @Test func headersThatNeverEndAreRefusedOnceTheyAreLongEnough() throws {
+        // A sender that omits the blank line would otherwise be waited on for
+        // as long as it cared to keep typing.
+        let short = "GET / HTTP/1.1\r\nX: " + String(repeating: "a", count: 100)
+        #expect(isIncomplete(short))
+        let endless = "GET / HTTP/1.1\r\nX: "
+            + String(repeating: "a", count: HTTPListener.Limit.headerBytes + 1)
+        #expect(refusal(endless)?.status == "431 Request Header Fields Too Large")
+    }
+
+    @Test func aBodyLongerThanDeclaredIsTruncatedToWhatWasPromised() throws {
+        let request = try #require(
+            parse("POST /mcp HTTP/1.1\r\nContent-Length: 3\r\n\r\nabcdef"))
+        #expect(String(decoding: request.body, as: UTF8.self) == "abc")
+    }
+
+    @Test func aMalformedRequestLineIsRefused() {
+        #expect(refusal("GARBAGE\r\n\r\n")?.status == "400 Bad Request")
     }
 
     @Test func headerNamesAreCaseInsensitive() throws {
@@ -368,6 +439,21 @@ struct HTTPListenerTests {
         #expect(request.segments == ["api", "v1", "tabs", "1", "node"])
         #expect(request.query["path"] == "/tmp/a b")
         #expect(request.query["limit"] == "10")
+    }
+
+    /// A path is filesystem text, not an HTML form field: `+` is a character a
+    /// folder is allowed to have in its name, and reading it as a space sent
+    /// every lookup of `foo+bar` to a folder that does not exist.
+    @Test func aPlusIsACharacterAndNotASpace() throws {
+        let request = try #require(parse("GET /n?path=/tmp/foo+bar HTTP/1.1\r\n\r\n"))
+        #expect(request.query["path"] == "/tmp/foo+bar")
+    }
+
+    @Test func encodedSeparatorsSurviveTheSplit() throws {
+        // `a&b=c` percent-encoded: without the encoding this is three query
+        // items, and the path is whatever is left of the first `&`.
+        let request = try #require(parse("GET /n?path=/tmp/a%26b%3Dc HTTP/1.1\r\n\r\n"))
+        #expect(request.query["path"] == "/tmp/a&b=c")
     }
 
     @Test func aResponseCarriesItsOwnLength() {
@@ -493,5 +579,33 @@ struct CompanionOverHTTPTests {
         let node = try CompanionAPI.decoder().decode(CompanionAPI.Node.self, from: inner.data)
         #expect(node.name == "Media")
         #expect(node.children.map(\.name) == ["clip.mov", "trip.jpg"])
+
+        // The listener is on the network and answers before anyone has paired,
+        // so it is asked the question that used to kill it. Nothing here is
+        // authenticated: this is what a stranger can send.
+        try await send(raw: "POST /mcp HTTP/1.1\r\nContent-Length: -1\r\n\r\n",
+                       toPort: listener.port)
+        try await send(raw: "GET /api/v1/info HTTP/1.1\r\nContent-Length: 99999999999\r\n\r\n",
+                       toPort: listener.port)
+
+        // Still serving, which is the whole assertion.
+        let after = await request(URL(string: base + "/tabs")!, token: token)
+        #expect(after.status == 200)
+    }
+
+    /// Writes bytes at the socket, because `URLRequest` will not send a header
+    /// this malformed and the point is that a stranger can.
+    private func send(raw text: String, toPort port: UInt16) async throws {
+        let connection = NWConnection(host: "127.0.0.1",
+                                      port: NWEndpoint.Port(rawValue: port)!, using: .tcp)
+        connection.start(queue: .global())
+        defer { connection.cancel() }
+        await withCheckedContinuation { continuation in
+            connection.send(content: Data(text.utf8), completion: .contentProcessed { _ in
+                continuation.resume()
+            })
+        }
+        // Long enough for the listener to read and act on it, one way or another.
+        try await Task.sleep(nanoseconds: 300_000_000)
     }
 }

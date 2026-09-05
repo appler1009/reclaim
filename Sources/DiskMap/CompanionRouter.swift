@@ -5,11 +5,18 @@ import ReclaimKit
 ///
 /// Nothing here knows about sockets, so every route, every refusal and the
 /// whole pairing dance can be exercised by handing it a request.
+///
+/// Tabs only, deliberately — no MCP. This port is cleartext HTTP on every
+/// interface, and the bearer token rides on it in the clear; anyone who can
+/// watch the phone's traffic or stand between it and the Mac has that token
+/// until it is revoked. Read access to a disk map is the price of the feature
+/// and the user opts into it. `scan_now` — reading an arbitrary path and
+/// writing it into history — is not, so MCP stays on loopback where an agent
+/// is already on the machine. Putting it back here means TLS first.
 @MainActor
 enum CompanionRouter {
     static func respond(to request: HTTPListener.Request,
-                        service: CompanionService,
-                        mcp: MCPEndpoint = MCPEndpoint()) -> HTTPListener.Response {
+                        service: CompanionService) -> HTTPListener.Response {
         // `/mcp` is not under the API prefix and is dispatched on its own.
         let path = route(request) ?? []
 
@@ -31,12 +38,6 @@ enum CompanionRouter {
 
         guard service.paired.accepts(token: bearer(request)) else {
             return .failure("401 Unauthorized", "Pair this device with the Mac first.")
-        }
-
-        // The same MCP surface as loopback, so an agent on a paired device can
-        // ask what an agent on this Mac can.
-        if request.path.hasPrefix("/mcp") {
-            return MCPRouter.respond(to: request, endpoint: mcp)
         }
 
         switch (request.method, path) {

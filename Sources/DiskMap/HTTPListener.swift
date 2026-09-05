@@ -29,15 +29,18 @@ final class HTTPListener: @unchecked Sendable {
 
         /// Percent-decoded query items. Repeated keys keep the last value, which
         /// is the shape this API's parameters have.
+        ///
+        /// A `+` is a `+`, not a space. That reading belongs to HTML form
+        /// encoding, which this is not, and here it is actively wrong: these
+        /// values are filesystem paths, and a folder called `foo+bar` is a
+        /// perfectly ordinary folder. A space arrives as `%20`.
         var query: [String: String] {
             guard let mark = target.firstIndex(of: "?") else { return [:] }
             var items: [String: String] = [:]
             for pair in target[target.index(after: mark)...].split(separator: "&") {
                 let halves = pair.split(separator: "=", maxSplits: 1)
                 guard let name = halves.first?.removingPercentEncoding else { continue }
-                let value = halves.count > 1
-                    ? (halves[1].replacingOccurrences(of: "+", with: " ").removingPercentEncoding ?? "")
-                    : ""
+                let value = halves.count > 1 ? (halves[1].removingPercentEncoding ?? "") : ""
                 items[name] = value
             }
             return items
@@ -88,6 +91,29 @@ final class HTTPListener: @unchecked Sendable {
     enum Reach {
         case loopback
         case all
+    }
+
+    /// What a half-read buffer amounts to.
+    ///
+    /// Three states rather than an optional: "not yet" and "never" are
+    /// different answers, and conflating them is how a malformed request got as
+    /// far as the body-length arithmetic below.
+    enum Parsed {
+        case incomplete
+        case ready(Request)
+        case rejected(Response)
+    }
+
+    /// Nothing on this listener is trusted — it answers before any pairing
+    /// check, on every interface — so a request that will not be served is
+    /// refused on its size before it is stored, let alone parsed.
+    enum Limit {
+        /// Generous for a request line and a dozen headers; nowhere near enough
+        /// to be worth sending as an attack.
+        static let headerBytes = 32 * 1024
+        /// The largest body this app has a use for is an MCP batch, which is
+        /// text and small. A megabyte is already an order of magnitude of room.
+        static let bodyBytes = 1024 * 1024
     }
 
     private let responder: @Sendable (Request) async -> Response
@@ -172,7 +198,8 @@ final class HTTPListener: @unchecked Sendable {
             var buffer = buffer
             if let data { buffer.append(data) }
 
-            if let request = Self.parse(buffer) {
+            switch Self.parse(buffer) {
+            case .ready(let request):
                 // Detached from the connection's callback so a responder that
                 // has to hop to the main actor — which every live-tab answer
                 // does — is not doing it inside the network queue's callback.
@@ -183,25 +210,58 @@ final class HTTPListener: @unchecked Sendable {
                                     completion: .contentProcessed { _ in connection.cancel() })
                 }
                 return
-            }
-            if isComplete || error != nil {
-                connection.cancel()
+
+            case .rejected(let response):
+                connection.send(content: response.data,
+                                completion: .contentProcessed { _ in connection.cancel() })
                 return
+
+            case .incomplete:
+                if isComplete || error != nil {
+                    connection.cancel()
+                    return
+                }
+                // A sender that never finishes its headers, or promises a body
+                // and dribbles it, would otherwise grow this buffer a megabyte
+                // at a time for as long as it cared to.
+                guard buffer.count <= Limit.headerBytes + Limit.bodyBytes else {
+                    connection.send(content: Response.failure("413 Payload Too Large",
+                                                              "That request is too large.").data,
+                                    completion: .contentProcessed { _ in connection.cancel() })
+                    return
+                }
+                self.receive(connection, buffer: buffer)
             }
-            self.receive(connection, buffer: buffer)
         }
     }
 
-    /// Returns nil until the whole request, headers and declared body, has arrived.
-    static func parse(_ buffer: Data) -> Request? {
-        guard let headerEnd = buffer.range(of: Data("\r\n\r\n".utf8)) else { return nil }
+    /// `.incomplete` until the whole request — headers and declared body — has
+    /// arrived, `.rejected` for one that will never be worth serving.
+    static func parse(_ buffer: Data) -> Parsed {
+        guard let headerEnd = buffer.range(of: Data("\r\n\r\n".utf8)) else {
+            // No end of headers yet. Whether that is a slow sender or one that
+            // has no intention of finishing is decided on size.
+            return buffer.count > Limit.headerBytes
+                ? .rejected(.failure("431 Request Header Fields Too Large",
+                                     "Those headers are too long."))
+                : .incomplete
+        }
+        guard headerEnd.lowerBound - buffer.startIndex <= Limit.headerBytes else {
+            return .rejected(.failure("431 Request Header Fields Too Large",
+                                      "Those headers are too long."))
+        }
+
         let headerText = String(decoding: buffer[..<headerEnd.lowerBound], as: UTF8.self)
         var lines = headerText.split(separator: "\r\n", omittingEmptySubsequences: false)
-        guard let requestLine = lines.first else { return nil }
+        guard let requestLine = lines.first else {
+            return .rejected(.failure("400 Bad Request", "Empty request."))
+        }
         lines.removeFirst()
 
         let parts = requestLine.split(separator: " ")
-        guard parts.count >= 2 else { return nil }
+        guard parts.count >= 2 else {
+            return .rejected(.failure("400 Bad Request", "Malformed request line."))
+        }
 
         var headers: [String: String] = [:]
         for line in lines {
@@ -211,10 +271,25 @@ final class HTTPListener: @unchecked Sendable {
                 pieces[1].trimmingCharacters(in: .whitespaces)
         }
 
-        let declared = Int(headers["content-length"] ?? "") ?? 0
+        // The declared length is a stranger's number, and everything below is
+        // arithmetic on it. `Int("-1")` is -1, `count >= -1` is true, and
+        // `prefix(-1)` traps — one header was enough to take the process down.
+        let declared: Int
+        if let stated = headers["content-length"] {
+            guard let length = Int(stated), length >= 0 else {
+                return .rejected(.failure("400 Bad Request", "Bad Content-Length."))
+            }
+            guard length <= Limit.bodyBytes else {
+                return .rejected(.failure("413 Payload Too Large", "That body is too large."))
+            }
+            declared = length
+        } else {
+            declared = 0
+        }
+
         let body = buffer[headerEnd.upperBound...]
-        guard body.count >= declared else { return nil }
-        return Request(method: String(parts[0]), target: String(parts[1]),
-                       headers: headers, body: Data(body.prefix(declared)))
+        guard body.count >= declared else { return .incomplete }
+        return .ready(Request(method: String(parts[0]), target: String(parts[1]),
+                              headers: headers, body: Data(body.prefix(declared))))
     }
 }

@@ -123,8 +123,17 @@ actor CompanionClient {
         }
     }
 
+    /// Percent-encodes one query *value*.
+    ///
+    /// Not `.urlQueryAllowed`, which is the set legal *anywhere* in a query
+    /// string and so leaves `+ & = ? #` alone: a folder called `a&b` would
+    /// split into a second query item, and `foo+bar` would arrive as `foo bar`.
+    /// A path is user-supplied text, and none of those characters are rare in
+    /// one.
     private func escaped(_ value: String) -> String {
-        value.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? value
+        let allowed = CharacterSet.urlQueryAllowed
+            .subtracting(CharacterSet(charactersIn: "+&=?#"))
+        return value.addingPercentEncoding(withAllowedCharacters: allowed) ?? value
     }
 }
 
