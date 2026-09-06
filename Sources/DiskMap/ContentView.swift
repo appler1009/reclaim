@@ -185,11 +185,16 @@ struct ContentView: View {
     /// within it, so the two do not repeat each other.
     private var windowTitle: String {
         guard model.scanRoot != nil else {
-            // Nothing scanned yet: name it for what it is waiting to become.
-            if model.isScanning { return "Scanning…" }
-            // A restored tab knows its target before it has a tree.
-            if model.queuedTarget != nil { return model.scanTargetName }
-            return "New Scan"
+            // Named from the target rather than from a tree that does not exist
+            // yet — a scan knows what it was pointed at from the first moment,
+            // and a restored tab knows before it has even started. Listing the
+            // first level of a volume or a network folder can take a while, and
+            // the overlay covering the window in the meantime is a spinner: this
+            // is the only thing on screen saying what is being waited for.
+            if model.scannedURL != nil || model.queuedTarget != nil {
+                return model.scanTargetName
+            }
+            return model.isScanning ? "Scanning…" : "New Scan"
         }
         return model.scanTargetName
     }
@@ -745,20 +750,17 @@ private struct Overlay: View {
             Color.ink.opacity(model.phase == .scanning ? 0.86 : 1).ignoresSafeArea()
             switch model.phase {
             case .idle where model.queuedTarget != nil:
-                // A restored tab, waiting its turn. Restored tabs scan one at a
-                // time so that opening the app is not three walks of the disk
+                // A restored tab, waiting its turn. Restored tabs scan one at
+                // a time so that opening the app is not three walks of the disk
                 // at once — but a window that simply offered a start screen
                 // would be lying about what is going to happen to it.
+                //
+                // A spinner and the one thing to do about it: the window and
+                // its tab already name the target, and a sentence explaining
+                // that a queue is a queue is read once and stared through on
+                // every launch after that.
                 VStack(spacing: 14) {
                     ProgressView().controlSize(.large)
-                    // Named the way the rest of the app names a target: the
-                    // startup volume's last path component is the empty string,
-                    // which read as "Waiting to scan " with nothing after it.
-                    Text("Waiting to scan \(model.scanTargetName)")
-                        .font(.system(size: 15, weight: .semibold))
-                        .foregroundStyle(.white.opacity(0.9))
-                    Text("Restored tabs are scanned one at a time.")
-                        .font(.system(size: 12)).foregroundStyle(.white.opacity(0.55))
                     // Through the queue rather than around it: scanning from
                     // here directly would start a second walk of the disk
                     // beside the one already running, and leave a stale entry
@@ -803,16 +805,12 @@ private struct Overlay: View {
                 }
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
             case .scanning:
+                // The same: a spinner says it is working, and the counters that
+                // used to sit here are on the strip along the top, where they
+                // stay once the map arrives instead of vanishing with the
+                // overlay that held them.
                 VStack(spacing: 14) {
                     ProgressView().controlSize(.large)
-                    Text("Scanning \(model.scannedURL?.lastPathComponent ?? "")")
-                        .font(.system(size: 15, weight: .semibold)).foregroundStyle(.white.opacity(0.9))
-                    Text("\(model.progress.filesScanned.formatted()) files · \(ByteFormat.string(model.progress.bytesScanned))")
-                        .font(.system(size: 12)).monospacedDigit().foregroundStyle(.white.opacity(0.6))
-                    Text(model.progress.currentPath)
-                        .font(.system(size: 10, design: .monospaced))
-                        .foregroundStyle(.white.opacity(0.3))
-                        .lineLimit(1).truncationMode(.middle).frame(maxWidth: 520)
                     Button("Cancel") { model.cancelScan() }
                         .buttonStyle(GhostButtonStyle())
                 }
