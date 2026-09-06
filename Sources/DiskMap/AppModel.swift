@@ -17,7 +17,6 @@ final class AppModel: ObservableObject {
     let tabID = UUID().uuidString
 
     @Published var phase: Phase = .idle
-    @Published var progress = ScanProgress(filesScanned: 0, bytesScanned: 0, currentPath: "")
     @Published var scanRoot: FileItem?
     /// The navigation state below is deliberately not `@Published`.
     ///
@@ -352,7 +351,6 @@ final class AppModel: ObservableObject {
         staged = []
         breakdown = Breakdown()
         selectedItem = nil
-        progress = ScanProgress(filesScanned: 0, bytesScanned: 0, currentPath: url.path)
         readVolumeInfo(for: url)
         refreshVolumes()
 
@@ -363,10 +361,6 @@ final class AppModel: ObservableObject {
         SessionRestore.shared.captureIfSettled()
         let startedAt = Date()
         isScanning = true
-
-        session.onProgress = { [weak self] snapshot in
-            DispatchQueue.main.async { self?.progress = snapshot }
-        }
 
         // Held strongly, deliberately, for as long as the scan runs: a window
         // closed near the end of a ten-minute volume walk should still file
