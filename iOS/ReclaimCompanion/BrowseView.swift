@@ -26,6 +26,11 @@ struct BrowseView: View {
     @State private var node: CompanionAPI.Node?
     @State private var failure: String?
     @State private var selected: String?
+    /// Set when the map made the selection, so the list brings that row into
+    /// the middle. A tap on the row itself leaves it false: scrolling the list
+    /// out from under the finger that just touched it is not synchronising
+    /// anything, it is taking the tap somewhere else.
+    @State private var centreOnSelection = false
     /// Fraction of the height the map takes. Kept per screen rather than
     /// remembered: a folder of two tiles and a folder of two hundred do not
     /// want the same split.
@@ -78,6 +83,7 @@ struct BrowseView: View {
                 } else {
                     TreemapCanvas(children: node.children, selected: selected,
                                   isResizing: dragStart != nil) { child in
+                        centreOnSelection = true
                         selected = child.path
                         drill(child)
                     }
@@ -86,7 +92,8 @@ struct BrowseView: View {
 
                     divider(over: geometry.size.height)
 
-                    ChildList(node: node, selected: $selected, drill: drill)
+                    ChildList(node: node, selected: $selected,
+                              centreOnSelection: $centreOnSelection, drill: drill)
                 }
 
                 Breadcrumb(node: node)
@@ -166,15 +173,37 @@ private struct Summary: View {
 private struct ChildList: View {
     let node: CompanionAPI.Node
     @Binding var selected: String?
+    /// Whether the next selection should be scrolled to. See `BrowseView`.
+    @Binding var centreOnSelection: Bool
     let drill: (CompanionAPI.NodeChild) -> Void
 
     var body: some View {
+        ScrollViewReader { list in
+            rows
+                // The row a tile named is usually somewhere off the bottom of a
+                // phone-sized list, and a selection nobody can see is not a
+                // selection. Centred rather than merely scrolled into view, so
+                // its neighbours — the tiles either side of it on the map —
+                // come with it.
+                .onChange(of: selected) { _, path in
+                    guard centreOnSelection, let path else { return }
+                    centreOnSelection = false
+                    withAnimation(.easeInOut(duration: 0.25)) {
+                        list.scrollTo(path, anchor: .center)
+                    }
+                }
+        }
+    }
+
+    private var rows: some View {
         List {
             ForEach(node.children) { child in
                 Row(child: child, isSelected: child.path == selected)
                     .listRowBackground(child.path == selected ? Theme.raised : Theme.panel)
                     .contentShape(Rectangle())
                     .onTapGesture {
+                        // This selection is already in view, by definition.
+                        centreOnSelection = false
                         selected = child.path
                         drill(child)
                     }
