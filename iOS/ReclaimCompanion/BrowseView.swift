@@ -4,6 +4,9 @@ import SwiftUI
 /// A folder to open, as a navigation value.
 struct BrowseTarget: Hashable {
     let path: String
+    /// The name it was listed under. Carried so the screen it opens is titled
+    /// the moment it appears, rather than after its contents have been fetched.
+    let name: String
 }
 
 /// One folder of one tab: the map above, the same data ranked below.
@@ -16,6 +19,9 @@ struct BrowseView: View {
     let tab: CompanionAPI.TabSummary
     /// Nil is the tab's scan root.
     let path: String?
+    /// What to call this folder before it has been fetched — the name the row
+    /// that opened it already showed. Nil at the scan root, which the tab names.
+    let name: String?
 
     @State private var node: CompanionAPI.Node?
     @State private var failure: String?
@@ -40,13 +46,18 @@ struct BrowseView: View {
                 ProgressView().controlSize(.large)
             }
         }
-        .navigationTitle(node?.name ?? tab.title)
+        // The name comes from the row that was tapped, so the title is right on
+        // the way in rather than after the fetch. The rule lives in ReclaimKit
+        // because the scan root is a case of its own, and it is easier to state
+        // once and test than to read out of a chain of `??`.
+        .navigationTitle(CompanionAPI.folderTitle(path: path, fetched: node?.name,
+                                                  row: name, tab: tab.title))
         .navigationBarTitleDisplayMode(.inline)
         .toolbarBackground(Theme.panel, for: .navigationBar)
         // Its own destination type, so this does not collide with the Mac list's
         // own `String` destination further up the same stack.
         .navigationDestination(item: $pushed) { target in
-            BrowseView(session: session, tab: tab, path: target.path)
+            BrowseView(session: session, tab: tab, path: target.path, name: target.name)
         }
         .task { await load() }
     }
@@ -114,7 +125,7 @@ struct BrowseView: View {
             selected = child.path
             return
         }
-        pushed = BrowseTarget(path: child.path)
+        pushed = BrowseTarget(path: child.path, name: child.name)
     }
 
     private func load() async {

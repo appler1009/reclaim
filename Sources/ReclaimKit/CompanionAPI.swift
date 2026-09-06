@@ -69,6 +69,26 @@ public enum CompanionAPI {
         }
     }
 
+    // MARK: - Titles
+
+    /// What a companion screen calls the folder it is showing.
+    ///
+    /// Three names are in play and they do not all agree. The row that was
+    /// tapped knows the folder's name before anything has been fetched. The
+    /// fetched node knows it too — except at a scan root, where a `FileItem`'s
+    /// name is its absolute path, which is why the Mac titles a window from its
+    /// target rather than from its tree. The tab carries the short form of
+    /// exactly that root.
+    ///
+    /// So a scan root is named by its tab, whatever arrives later; anything
+    /// below it prefers what was fetched, then what the row said, and reaches
+    /// for the tab only in the moment before either exists.
+    public static func folderTitle(path: String?, fetched: String?,
+                                   row: String?, tab: String) -> String {
+        guard path != nil else { return tab }
+        return fetched ?? row ?? tab
+    }
+
     // MARK: - Tabs
 
     /// One open tab of the Mac app, as a row in the companion's list.
