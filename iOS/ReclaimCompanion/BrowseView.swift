@@ -26,6 +26,19 @@ struct BrowseView: View {
     @State private var node: CompanionAPI.Node?
     @State private var failure: String?
     @State private var selected: String?
+    /// Bumped by a map tap that stays on this screen, so the list brings the
+    /// row it named into the middle.
+    ///
+    /// A count rather than a flag on the selection, because the gesture worth
+    /// serving most is the second tap on the same tile: the reader has scrolled
+    /// the list away, and taps that small file again to find it. The path has
+    /// not changed, so nothing derived from it fires — but the tap did happen,
+    /// and this counts taps.
+    ///
+    /// A tap on a row bumps nothing: that row is in view by definition, and
+    /// scrolling the list out from under the finger that touched it is not
+    /// synchronising anything.
+    @State private var centreRequest = 0
     /// Fraction of the height the map takes. Kept per screen rather than
     /// remembered: a folder of two tiles and a folder of two hundred do not
     /// want the same split.
@@ -79,6 +92,10 @@ struct BrowseView: View {
                     TreemapCanvas(children: node.children, selected: selected,
                                   isResizing: dragStart != nil) { child in
                         selected = child.path
+                        // A folder tile is on its way to another screen, and
+                        // the list it would scroll is the one being replaced.
+                        // A folder has a destination, not a row to find.
+                        if !child.isDirectory { centreRequest += 1 }
                         drill(child)
                     }
                     .frame(height: max(140, geometry.size.height * mapShare))
@@ -86,7 +103,8 @@ struct BrowseView: View {
 
                     divider(over: geometry.size.height)
 
-                    ChildList(node: node, selected: $selected, drill: drill)
+                    ChildList(node: node, selected: $selected,
+                              centreRequest: centreRequest, drill: drill)
                 }
 
                 Breadcrumb(node: node)
@@ -166,12 +184,40 @@ private struct Summary: View {
 private struct ChildList: View {
     let node: CompanionAPI.Node
     @Binding var selected: String?
+    /// Counts the map taps that want a row brought into view. See `BrowseView`.
+    let centreRequest: Int
     let drill: (CompanionAPI.NodeChild) -> Void
 
     var body: some View {
+        ScrollViewReader { list in
+            rows
+                // The row a tile named is usually somewhere off the bottom of a
+                // phone-sized list, and a selection nobody can see is not a
+                // selection. Centred rather than merely scrolled into view, so
+                // its neighbours — the tiles either side of it on the map —
+                // come with it.
+                //
+                // Driven by the tap count, not by the selected path: tapping
+                // the same tile twice is the same path, and it is exactly the
+                // gesture that means "show me that again".
+                .onChange(of: centreRequest) { _, _ in
+                    guard let selected else { return }
+                    withAnimation(.easeInOut(duration: 0.25)) {
+                        list.scrollTo(selected, anchor: .center)
+                    }
+                }
+        }
+    }
+
+    private var rows: some View {
         List {
             ForEach(node.children) { child in
                 Row(child: child, isSelected: child.path == selected)
+                    // The id `scrollTo` is given. `ForEach` over an
+                    // `Identifiable` is not enough on its own: the proxy inside
+                    // a `List` does not reliably see the element's own id, and
+                    // a `scrollTo` it cannot resolve is silently nothing.
+                    .id(child.path)
                     .listRowBackground(child.path == selected ? Theme.raised : Theme.panel)
                     .contentShape(Rectangle())
                     .onTapGesture {
