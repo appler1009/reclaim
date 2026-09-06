@@ -609,3 +609,39 @@ struct CompanionOverHTTPTests {
         try await Task.sleep(nanoseconds: 300_000_000)
     }
 }
+
+@Suite("Companion titles")
+struct CompanionTitleTests {
+    @Test func aScanRootKeepsTheNameItsTabGivesIt() {
+        // A scan root's own name is its absolute path — the Mac never titles a
+        // window with that, and neither should the phone.
+        #expect(CompanionAPI.folderTitle(path: nil, fetched: nil, row: nil,
+                                         tab: "Macintosh HD") == "Macintosh HD")
+        #expect(CompanionAPI.folderTitle(path: nil, fetched: "/", row: nil,
+                                         tab: "Macintosh HD") == "Macintosh HD",
+                "the payload arriving must not retitle the screen")
+        #expect(CompanionAPI.folderTitle(path: nil, fetched: "/tmp/sample", row: nil,
+                                         tab: "sample") == "sample")
+    }
+
+    @Test func aFolderIsNamedBeforeItArrives() {
+        // The whole point: the row that was tapped already knew this.
+        #expect(CompanionAPI.folderTitle(path: "/tmp/sample/nested", fetched: nil,
+                                         row: "nested", tab: "sample") == "nested")
+    }
+
+    @Test func theFetchedNameWinsOnceItIsThere() {
+        #expect(CompanionAPI.folderTitle(path: "/tmp/sample/nested", fetched: "nested",
+                                         row: "nested", tab: "sample") == "nested",
+                "and agrees, so nothing moves on screen")
+        // A folder renamed since the list was drawn: what was fetched is what
+        // is there now.
+        #expect(CompanionAPI.folderTitle(path: "/tmp/sample/nested", fetched: "renamed",
+                                         row: "nested", tab: "sample") == "renamed")
+    }
+
+    @Test func withNothingElseToGoOnTheTabNamesIt() {
+        #expect(CompanionAPI.folderTitle(path: "/tmp/sample/nested", fetched: nil,
+                                         row: nil, tab: "sample") == "sample")
+    }
+}

@@ -46,11 +46,12 @@ struct BrowseView: View {
                 ProgressView().controlSize(.large)
             }
         }
-        // The name comes from the row that was tapped, so the title is right
-        // on the way in; without it the screen wears the tab's own name — the
-        // scan target — for as long as the fetch takes, then changes under the
-        // reader just as they arrive.
-        .navigationTitle(node?.name ?? name ?? tab.title)
+        // The name comes from the row that was tapped, so the title is right on
+        // the way in rather than after the fetch. The rule lives in ReclaimKit
+        // because the scan root is a case of its own, and it is easier to state
+        // once and test than to read out of a chain of `??`.
+        .navigationTitle(CompanionAPI.folderTitle(path: path, fetched: node?.name,
+                                                  row: name, tab: tab.title))
         .navigationBarTitleDisplayMode(.inline)
         .toolbarBackground(Theme.panel, for: .navigationBar)
         // Its own destination type, so this does not collide with the Mac list's
