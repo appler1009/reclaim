@@ -185,11 +185,16 @@ struct ContentView: View {
     /// within it, so the two do not repeat each other.
     private var windowTitle: String {
         guard model.scanRoot != nil else {
-            // Nothing scanned yet: name it for what it is waiting to become.
-            if model.isScanning { return "Scanning…" }
-            // A restored tab knows its target before it has a tree.
-            if model.queuedTarget != nil { return model.scanTargetName }
-            return "New Scan"
+            // Named from the target rather than from a tree that does not exist
+            // yet — a scan knows what it was pointed at from the first moment,
+            // and a restored tab knows before it has even started. Listing the
+            // first level of a volume or a network folder can take a while, and
+            // the overlay covering the window in the meantime is a spinner: this
+            // is the only thing on screen saying what is being waited for.
+            if model.scannedURL != nil || model.queuedTarget != nil {
+                return model.scanTargetName
+            }
+            return model.isScanning ? "Scanning…" : "New Scan"
         }
         return model.scanTargetName
     }
