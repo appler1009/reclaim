@@ -32,6 +32,13 @@ let tiles: [Tile] = [
 /// mask cuts through it.
 let iOSCornerFraction: CGFloat = 0.2237
 
+/// How much of the icon's width the white rim takes.
+///
+/// A fraction rather than a number of pixels, and named beside the corner it
+/// follows: both are about the shape of the icon's edge, and one of them being
+/// a literal buried in the drawing made them look unrelated.
+let iOSRimFraction: CGFloat = 0.04
+
 func render(size: Int, rounded: Bool = true, border: NSColor? = nil) -> Data? {
     let dimension = CGFloat(size)
     guard let context = CGContext(data: nil, width: size, height: size, bitsPerComponent: 8,
@@ -63,9 +70,7 @@ func render(size: Int, rounded: Bool = true, border: NSColor? = nil) -> Data? {
     if let border {
         context.setFillColor(border.cgColor)
         context.fill(square)
-        // A fraction of the icon rather than a fixed number of pixels: the same
-        // rim has to read at 1024 and at the 40 points a home screen gives it.
-        let width = dimension * 0.04
+        let width = dimension * iOSRimFraction
         board = square.insetBy(dx: width, dy: width)
         let radius = max(0, dimension * iOSCornerFraction - width)
         context.addPath(CGPath(roundedRect: board, cornerWidth: radius, cornerHeight: radius,
