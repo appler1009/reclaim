@@ -22,7 +22,7 @@ struct TabsView: View {
                     }
                     ForEach(session.tabs) { tab in
                         NavigationLink {
-                            BrowseView(session: session, tab: tab, path: nil)
+                            BrowseView(session: session, tab: tab, path: nil, name: nil)
                         } label: {
                             TabRow(tab: tab)
                         }
