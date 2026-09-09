@@ -276,9 +276,6 @@ private struct HeaderBar: View {
                             Text("· \(Int((Double(model.viewedBytes) / Double(model.scannedBytes) * 100).rounded()))% of scan")
                                 .font(.system(size: 11)).foregroundStyle(.white.opacity(0.45))
                         }
-                        if let change = model.viewedChange, let label = change.label() {
-                            ChangeChip(change: change, label: label)
-                        }
                     }
                     // No file count here: "files inside" sits right beside it.
                     Overline(text: model.isScanning
