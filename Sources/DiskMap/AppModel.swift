@@ -496,12 +496,6 @@ final class AppModel: ObservableObject {
         return SizeChange(bytes: Int64(currentBytes) - Int64(previous), since: comparison.takenAt)
     }
 
-    /// The change for the folder currently in view.
-    var viewedChange: SizeChange? {
-        guard let zoomRoot else { return nil }
-        return change(forPath: zoomRoot.path, currentBytes: zoomRoot.size(measure))
-    }
-
     /// Shows the first level of a running scan and starts growing its sizes from
     /// the scanner's per-branch counters.
     private func adoptPartial(_ partial: FileItem, session: ScanSession) {
