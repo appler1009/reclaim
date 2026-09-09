@@ -119,6 +119,9 @@ final class AppModel: ObservableObject {
     private var historyObserver: NSObjectProtocol?
     /// Counts enumerations so a slow one cannot overwrite a newer result.
     private var volumeRefresh = 0
+    /// The same, for Trash measurements: emptying a large Trash starts a slow
+    /// walk that a later, quicker one can overtake.
+    private var trashRefresh = 0
     /// Tells this window when the Trash it is reporting on has changed, so
     /// emptying it in Finder is not a figure left standing on the strip.
     private let trashWatcher = TrashWatcher()
@@ -129,11 +132,7 @@ final class AppModel: ObservableObject {
         // Both figures move together when the Trash is emptied: what it holds
         // goes to nothing, and the space it held comes back as free. Refreshing
         // one and not the other trades a stale number for an inconsistent pair.
-        trashWatcher.onChange = { [weak self] in
-            guard let self else { return }
-            self.refreshTrashSize()
-            if let url = self.scannedURL { self.readVolumeInfo(for: url) }
-        }
+        trashWatcher.onChange = { [weak self] in self?.refreshTrashSize() }
         refreshVolumes()
         refreshRecentScans()
         hasFullDiskAccess = Self.probeFullDiskAccess()
@@ -234,14 +233,35 @@ final class AppModel: ObservableObject {
         }
     }
 
-    /// Measured off the main thread: the Trash can hold a lot of files.
+    /// Measures the Trash and re-reads the volume it sits on, off the main
+    /// thread, and publishes the pair together.
+    ///
+    /// Both because both move at once when the Trash is emptied — what it holds
+    /// goes to nothing, the space comes back as free — and publishing one
+    /// without the other trades a stale figure for two that disagree. Off the
+    /// main thread because the Trash can hold a great many files, and because
+    /// the volume's own capacity read is the ~45ms call that `refreshVolumes`
+    /// was moved off the main thread for.
     func refreshTrashSize() {
         guard let url = scannedURL else { return }
+        trashRefresh &+= 1
+        let generation = trashRefresh
         DispatchQueue.global(qos: .utility).async { [weak self] in
             let contents = TrashInspector.contents(forVolumeContaining: url)
+            let space = VolumeSpace.read(for: url)
             DispatchQueue.main.async {
                 guard let self else { return }
+                // A measurement taken mid-empty of a large Trash outlives the
+                // quick one taken after it settled, and landing last would put
+                // the gigabytes back — the stale figure this exists to remove,
+                // arriving late. Only the newest measurement may speak.
+                guard generation == self.trashRefresh else { return }
                 self.trash = contents
+                if let space { self.apply(space) }
+                // The Trash may only now have come into existence — this app
+                // putting the first thing in it is one of the ways that
+                // happens — so this is the moment to look for it again.
+                self.trashWatcher.rearmIfIdle()
                 Log.debug("trash measured", ["bytes": "\(contents.bytes)",
                                              "items": "\(contents.items)"])
             }
@@ -635,6 +655,11 @@ final class AppModel: ObservableObject {
 
     private func readVolumeInfo(for url: URL) {
         guard let space = VolumeSpace.read(for: url) else { return }
+        apply(space)
+    }
+
+    /// The volume's figures as the strip shows them.
+    private func apply(_ space: VolumeSpace) {
         volumeSpace = space
         volumeCapacity = space.capacity
         volumeFree = space.available

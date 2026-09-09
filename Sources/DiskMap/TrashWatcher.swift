@@ -25,6 +25,13 @@ final class TrashWatcher {
     /// Called on the main actor once the Trash has settled after changing.
     var onChange: () -> Void
 
+    /// Which directories to watch for a volume. Injectable so a test can watch
+    /// somewhere it made, rather than the machine's own Trash.
+    private let trashURLs: (URL) -> [URL]
+    /// What was last asked for, so the watch can be built again: a Trash that
+    /// did not exist when this started, or one replaced under a descriptor
+    /// that is now good for nothing.
+    private var watched: URL?
     private var sources: [DispatchSourceFileSystemObject] = []
     /// Which run of the debounce is current. A note that arrives while another
     /// is pending supersedes it, and the superseded one does nothing when its
@@ -33,12 +40,20 @@ final class TrashWatcher {
     private let schedule: (TimeInterval, @escaping () -> Void) -> Void
 
     init(onChange: @escaping () -> Void = {},
-         schedule: ((TimeInterval, @escaping () -> Void) -> Void)? = nil) {
+         schedule: ((TimeInterval, @escaping () -> Void) -> Void)? = nil,
+         trashURLs: ((URL) -> [URL])? = nil) {
         self.onChange = onChange
         self.schedule = schedule ?? { after, work in
             DispatchQueue.main.asyncAfter(deadline: .now() + after, execute: work)
         }
+        self.trashURLs = trashURLs ?? { url in
+            TrashInspector.trashURLs(forVolumeAt: TrashInspector.volumeRoot(containing: url))
+        }
     }
+
+    /// Whether anything is actually being watched. A volume whose Trash does
+    /// not exist yet is watched by nothing until it does.
+    var isWatching: Bool { !sources.isEmpty }
 
     deinit {
         for source in sources { source.cancel() }
@@ -48,17 +63,31 @@ final class TrashWatcher {
     /// being watched before. Watching nothing is a legitimate state: a volume
     /// with no Trash directory yet has nothing to report until it has one.
     func watch(volumeContaining url: URL) {
+        watched = url
         stop()
-        let volume = TrashInspector.volumeRoot(containing: url)
-        for trash in TrashInspector.trashURLs(forVolumeAt: volume) {
+        for trash in trashURLs(url) {
             guard let source = Self.source(for: trash) else { continue }
-            source.setEventHandler { [weak self] in
-                MainActor.assumeIsolated { self?.noteChange() }
+            source.setEventHandler { [weak source, weak self] in
+                // A descriptor whose directory has been deleted or replaced
+                // reports once and then reports nothing ever again, so the
+                // watch has to be built afresh on the new one.
+                let stale = source.map { !$0.data.intersection([.delete, .revoke]).isEmpty } ?? false
+                MainActor.assumeIsolated { self?.noteChange(descriptorIsStale: stale) }
             }
             source.resume()
             sources.append(source)
         }
-        Log.debug("watching trash", ["volume": volume.path, "sources": "\(sources.count)"])
+        Log.debug("watching trash", ["target": url.path, "sources": "\(sources.count)"])
+    }
+
+    /// Builds the watch again when there is nothing watching.
+    ///
+    /// The Trash of a volume may not exist until something is put in it, and
+    /// the folder can be replaced wholesale. Either way the first this app
+    /// hears of it is a measurement, so that is when it looks again.
+    func rearmIfIdle() {
+        guard !isWatching, let watched else { return }
+        watch(volumeContaining: watched)
     }
 
     func stop() {
@@ -68,12 +97,16 @@ final class TrashWatcher {
 
     /// An event arrived. Exposed so the debounce can be exercised without a
     /// filesystem underneath it.
-    func noteChange() {
+    func noteChange(descriptorIsStale: Bool = false) {
+        // Nothing more will come from a descriptor whose directory has gone;
+        // it is dropped now and a new one is opened once things have settled.
+        if descriptorIsStale { stop() }
         generation += 1
         let mine = generation
         schedule(Self.settle) { [weak self] in
             guard let self, mine == self.generation else { return }
             self.onChange()
+            self.rearmIfIdle()
         }
     }
 
