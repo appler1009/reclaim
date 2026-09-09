@@ -8,6 +8,13 @@ import Testing
 /// rather than against whatever happens to be on the disk.
 @MainActor
 private func sampleTab(target: String = "/tmp/sample") -> AppModel {
+    let model = AppModel()
+    model.adoptForTesting(root: sampleTree(at: target), url: URL(fileURLWithPath: target))
+    return model
+}
+
+/// The same tree `sampleTab` shows, for snapshots that have no window.
+private func sampleTree(at target: String) -> FileItem {
     let photo = FileItem(name: "trip.jpg", isDirectory: false,
                          logicalSize: 900, physicalSize: 1_000)
     let clip = FileItem(name: "clip.mov", isDirectory: false,
@@ -24,10 +31,17 @@ private func sampleTab(target: String = "/tmp/sample") -> AppModel {
                         children: [media, source])
     root.physicalSize = 6_000
     root.logicalSize = 5_400
+    return root
+}
 
-    let model = AppModel()
-    model.adoptForTesting(root: root, url: URL(fileURLWithPath: target))
-    return model
+@MainActor
+private func isolatedWatchlist() -> Watchlist {
+    Watchlist(defaults: UserDefaults(suiteName: "reclaim.tests.\(UUID().uuidString)")!)
+}
+
+private func tempHistory() -> SnapshotStore {
+    SnapshotStore(directory: FileManager.default.temporaryDirectory
+        .appendingPathComponent("reclaim-history-\(UUID().uuidString)", isDirectory: true))
 }
 
 private func get(_ target: String, token: String? = nil) -> HTTPListener.Request {
@@ -158,6 +172,22 @@ struct LiveTabsTests {
     }
 }
 
+@Suite("History browse")
+@MainActor
+struct HistoryBrowseTests {
+    @Test func aSnapshotNodeKeepsTheTrailBackUp() throws {
+        let store = tempHistory()
+        store.record(Snapshot(root: sampleTree(at: "/tmp/watched"),
+                              target: "/tmp/watched", measure: .physical))
+        let node = try #require(HistoryBrowse.node(target: "/tmp/watched",
+                                                   path: "/tmp/watched/Media",
+                                                   store: store))
+        #expect(node.breadcrumb.map(\.path) == ["/tmp/watched", "/tmp/watched/Media"])
+        #expect(node.fileCount == 0, "per-folder counts are not in a snapshot")
+        #expect(node.types.isEmpty)
+    }
+}
+
 @Suite("Companion API")
 @MainActor
 struct CompanionRouterTests {
@@ -269,6 +299,104 @@ struct CompanionRouterTests {
         let token = service.paired.admit(name: "Phone")
         let response = CompanionRouter.respond(to: get("/api/v1/nonsense", token: token),
                                                service: service)
+        #expect(response.status == "404 Not Found")
+    }
+
+    @Test func aPairedDeviceSeesWatchedFoldersThatHaveNoTab() throws {
+        let service = isolatedService()
+        let token = service.paired.admit(name: "Phone")
+        let list = isolatedWatchlist()
+        list.add("/tmp/watched")
+        let store = tempHistory()
+        store.record(Snapshot(root: sampleTree(at: "/tmp/watched"),
+                              target: "/tmp/watched", measure: .physical))
+
+        let response = CompanionRouter.respond(
+            to: get("/api/v1/watched", token: token),
+            service: service, watchlist: list, history: store)
+        let payload = try decode(CompanionAPI.WatchedList.self, response)
+        #expect(payload.watched.map(\.target) == ["/tmp/watched"])
+        #expect(payload.watched[0].title == "watched")
+        #expect(payload.watched[0].totalBytes == 6_000)
+    }
+
+    @Test func aWatchedFolderWithNoScanIsStillListed() throws {
+        let service = isolatedService()
+        let token = service.paired.admit(name: "Phone")
+        let list = isolatedWatchlist()
+        list.add("/tmp/never-scanned")
+        let response = CompanionRouter.respond(
+            to: get("/api/v1/watched", token: token),
+            service: service, watchlist: list, history: tempHistory())
+        let payload = try decode(CompanionAPI.WatchedList.self, response)
+        #expect(payload.watched.count == 1)
+        #expect(payload.watched[0].takenAt == nil)
+        #expect(payload.watched[0].totalBytes == 0)
+    }
+
+    @Test func anOpenTabIsNotRepeatedInTheWatchlist() throws {
+        let service = isolatedService()
+        let token = service.paired.admit(name: "Phone")
+        let model = sampleTab()
+        let list = isolatedWatchlist()
+        list.add(model.scannedURL!.path)
+        let store = tempHistory()
+        store.record(Snapshot(root: model.scanRoot!, target: model.scannedURL!.path,
+                              measure: .physical))
+
+        let response = CompanionRouter.respond(
+            to: get("/api/v1/watched", token: token),
+            service: service, watchlist: list, history: store)
+        let payload = try decode(CompanionAPI.WatchedList.self, response)
+        #expect(payload.watched.isEmpty, "the tab already is that scan")
+    }
+
+    @Test func aWatchedSnapshotServesItsRootAndAFolderInside() throws {
+        let service = isolatedService()
+        let token = service.paired.admit(name: "Phone")
+        let list = isolatedWatchlist()
+        list.add("/tmp/watched")
+        let store = tempHistory()
+        store.record(Snapshot(root: sampleTree(at: "/tmp/watched"),
+                              target: "/tmp/watched", measure: .physical))
+
+        let root = CompanionRouter.respond(
+            to: get("/api/v1/watched/node?target=/tmp/watched", token: token),
+            service: service, watchlist: list, history: store)
+        let rootNode = try decode(CompanionAPI.Node.self, root)
+        #expect(rootNode.path == "/tmp/watched")
+        #expect(rootNode.children.map(\.name) == ["Media", "main.swift"])
+
+        let inner = CompanionRouter.respond(
+            to: get("/api/v1/watched/node?target=/tmp/watched&path=/tmp/watched/Media",
+                    token: token),
+            service: service, watchlist: list, history: store)
+        let innerNode = try decode(CompanionAPI.Node.self, inner)
+        #expect(innerNode.name == "Media")
+        #expect(innerNode.children.map(\.name) == ["clip.mov", "trip.jpg"])
+        #expect(innerNode.children[0].family == .media)
+    }
+
+    @Test func aWatchedFolderWithNoScanCannotBeOpened() {
+        let service = isolatedService()
+        let token = service.paired.admit(name: "Phone")
+        let list = isolatedWatchlist()
+        list.add("/tmp/never-scanned")
+        let response = CompanionRouter.respond(
+            to: get("/api/v1/watched/node?target=/tmp/never-scanned", token: token),
+            service: service, watchlist: list, history: tempHistory())
+        #expect(response.status == "409 Conflict")
+    }
+
+    @Test func historyIsNotServedForAFolderThatIsNotWatched() {
+        let service = isolatedService()
+        let token = service.paired.admit(name: "Phone")
+        let store = tempHistory()
+        store.record(Snapshot(root: sampleTree(at: "/tmp/secret"),
+                              target: "/tmp/secret", measure: .physical))
+        let response = CompanionRouter.respond(
+            to: get("/api/v1/watched/node?target=/tmp/secret", token: token),
+            service: service, watchlist: isolatedWatchlist(), history: store)
         #expect(response.status == "404 Not Found")
     }
 }
@@ -643,5 +771,10 @@ struct CompanionTitleTests {
     @Test func withNothingElseToGoOnTheTabNamesIt() {
         #expect(CompanionAPI.folderTitle(path: "/tmp/sample/nested", fetched: nil,
                                          row: nil, tab: "sample") == "sample")
+    }
+
+    @Test func aPathIsNamedTheWayATabWouldNameIt() {
+        #expect(CompanionAPI.shortTitle(forPath: "/") == "Startup Disk")
+        #expect(CompanionAPI.shortTitle(forPath: "/tmp/watched") == "watched")
     }
 }

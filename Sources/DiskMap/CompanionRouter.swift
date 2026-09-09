@@ -1,22 +1,24 @@
 import Foundation
 import ReclaimKit
 
-/// Turns an HTTP request into an answer about the open tabs.
+/// Turns an HTTP request into an answer about the open tabs and the watchlist.
 ///
 /// Nothing here knows about sockets, so every route, every refusal and the
 /// whole pairing dance can be exercised by handing it a request.
 ///
-/// Tabs only, deliberately — no MCP. This port is cleartext HTTP on every
-/// interface, and the bearer token rides on it in the clear; anyone who can
-/// watch the phone's traffic or stand between it and the Mac has that token
-/// until it is revoked. Read access to a disk map is the price of the feature
-/// and the user opts into it. `scan_now` — reading an arbitrary path and
-/// writing it into history — is not, so MCP stays on loopback where an agent
-/// is already on the machine. Putting it back here means TLS first.
+/// Read access only — no MCP. This port is cleartext HTTP on every interface,
+/// and the bearer token rides on it in the clear; anyone who can watch the
+/// phone's traffic or stand between it and the Mac has that token until it is
+/// revoked. Open scans and recorded watchlist history are the price of the
+/// feature and the user opts into it. `scan_now` — reading an arbitrary path
+/// and writing it into history — is not, so MCP stays on loopback where an
+/// agent is already on the machine. Putting it back here means TLS first.
 @MainActor
 enum CompanionRouter {
     static func respond(to request: HTTPListener.Request,
-                        service: CompanionService) -> HTTPListener.Response {
+                        service: CompanionService,
+                        watchlist: Watchlist? = nil,
+                        history: SnapshotStore? = nil) -> HTTPListener.Response {
         // `/mcp` is not under the API prefix and is dispatched on its own.
         let path = route(request) ?? []
 
@@ -49,6 +51,18 @@ enum CompanionRouter {
         case ("GET", let route) where route.first == "tabs"
             && (route.count == 2 || (route.count == 3 && route[2] == "node")):
             return node(tab: route[1], request: request)
+
+        case ("GET", ["watched"]):
+            return encode(CompanionAPI.WatchedList(
+                watched: HistoryBrowse.summaries(
+                    from: watchlist ?? .shared,
+                    store: history ?? SnapshotStore(),
+                    hiding: Set(LiveTabs.models.compactMap { $0.scannedURL?.path }))))
+
+        case ("GET", ["watched", "node"]):
+            return watchedNode(request: request,
+                               watchlist: watchlist ?? .shared,
+                               history: history ?? SnapshotStore())
 
         default:
             return .failure("404 Not Found", "No such endpoint: \(request.path)")
@@ -104,6 +118,23 @@ enum CompanionRouter {
                 ? .failure("409 Conflict", "That tab has not scanned anything yet.")
                 : .failure("404 Not Found",
                            "\(request.query["path"] ?? "") is not in this tab's scan.")
+        }
+        return encode(node)
+    }
+
+    private static func watchedNode(request: HTTPListener.Request,
+                                    watchlist: Watchlist,
+                                    history: SnapshotStore) -> HTTPListener.Response {
+        guard let target = request.query["target"], watchlist.contains(target) else {
+            return .failure("404 Not Found", "That folder is not on the watchlist.")
+        }
+        let limit = request.query["limit"].flatMap(Int.init) ?? LiveTabs.childLimit
+        guard let node = HistoryBrowse.node(target: target, path: request.query["path"],
+                                            store: history, limit: min(limit, 5000)) else {
+            return history.snapshots(forTarget: TargetPath.normalise(target)).isEmpty
+                ? .failure("409 Conflict", "That folder has not been scanned yet.")
+                : .failure("404 Not Found",
+                           "\(request.query["path"] ?? "") is not in the last scan of that folder.")
         }
         return encode(node)
     }

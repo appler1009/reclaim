@@ -1,7 +1,7 @@
 import ReclaimKit
 import SwiftUI
 
-/// One Mac: pairing if it has to happen, then the tabs it has open.
+/// One Mac: pairing if it has to happen, then the tabs and watchlist it can show.
 struct MacView: View {
     let mac: DiscoveredMac
     @StateObject private var session: MacSession

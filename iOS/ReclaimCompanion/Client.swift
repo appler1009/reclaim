@@ -60,11 +60,25 @@ actor CompanionClient {
         return list.tabs
     }
 
+    func watched() async throws -> [CompanionAPI.WatchedSummary] {
+        let list: CompanionAPI.WatchedList = try await get("/watched")
+        return list.watched
+    }
+
     /// A folder inside a tab's scan. `path` nil is the scan's root.
     func node(tab: String, path: String?) async throws -> CompanionAPI.Node {
         var route = "/tabs/\(escaped(tab))"
         if let path {
             route += "/node?path=\(escaped(path))"
+        }
+        return try await get(route)
+    }
+
+    /// A folder inside a watched target's latest snapshot. `path` nil is the root.
+    func watchedNode(target: String, path: String?) async throws -> CompanionAPI.Node {
+        var route = "/watched/node?target=\(escaped(target))"
+        if let path {
+            route += "&path=\(escaped(path))"
         }
         return try await get(route)
     }

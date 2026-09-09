@@ -9,18 +9,18 @@ struct BrowseTarget: Hashable {
     let name: String
 }
 
-/// One folder of one tab: the map above, the same data ranked below.
+/// One folder of a scan: the map above, the same data ranked below.
 ///
 /// The Mac puts the list beside the map because a desktop window is wide. A
 /// phone is tall, so they stack — and the divider between them is draggable for
 /// the same reason it is on the Mac: which half matters depends on the folder.
 struct BrowseView: View {
     @ObservedObject var session: MacSession
-    let tab: CompanionAPI.TabSummary
-    /// Nil is the tab's scan root.
+    let source: BrowseSource
+    /// Nil is the scan root.
     let path: String?
     /// What to call this folder before it has been fetched — the name the row
-    /// that opened it already showed. Nil at the scan root, which the tab names.
+    /// that opened it already showed. Nil at the scan root, which the source names.
     let name: String?
 
     @State private var node: CompanionAPI.Node?
@@ -64,13 +64,13 @@ struct BrowseView: View {
         // because the scan root is a case of its own, and it is easier to state
         // once and test than to read out of a chain of `??`.
         .navigationTitle(CompanionAPI.folderTitle(path: path, fetched: node?.name,
-                                                  row: name, tab: tab.title))
+                                                  row: name, tab: source.title))
         .navigationBarTitleDisplayMode(.inline)
         .toolbarBackground(Theme.panel, for: .navigationBar)
         // Its own destination type, so this does not collide with the Mac list's
         // own `String` destination further up the same stack.
         .navigationDestination(item: $pushed) { target in
-            BrowseView(session: session, tab: tab, path: target.path, name: target.name)
+            BrowseView(session: session, source: source, path: target.path, name: target.name)
         }
         .task { await load() }
     }
@@ -80,6 +80,14 @@ struct BrowseView: View {
     private func content(_ node: CompanionAPI.Node) -> some View {
         GeometryReader { geometry in
             VStack(spacing: 0) {
+                if let asOf = source.asOf {
+                    Text("As of \(asOf.formatted(.relative(presentation: .named)))")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .padding(.horizontal, 16)
+                        .padding(.top, 8)
+                }
                 Summary(node: node)
 
                 if node.children.isEmpty {
@@ -149,9 +157,39 @@ struct BrowseView: View {
     private func load() async {
         failure = nil
         do {
-            node = try await session.node(tab: tab.id, path: path)
+            node = try await source.node(from: session, path: path)
         } catch {
             failure = error.localizedDescription
+        }
+    }
+}
+
+/// Where a browse screen gets its tree: a live tab, or last night's snapshot.
+enum BrowseSource {
+    case tab(CompanionAPI.TabSummary)
+    case watched(CompanionAPI.WatchedSummary)
+
+    var title: String {
+        switch self {
+        case .tab(let tab): return tab.title
+        case .watched(let watched): return watched.title
+        }
+    }
+
+    /// Snapshot time, when this is not a live window.
+    var asOf: Date? {
+        switch self {
+        case .tab: return nil
+        case .watched(let watched): return watched.takenAt
+        }
+    }
+
+    func node(from session: MacSession, path: String?) async throws -> CompanionAPI.Node {
+        switch self {
+        case .tab(let tab):
+            return try await session.node(tab: tab.id, path: path)
+        case .watched(let watched):
+            return try await session.watchedNode(target: watched.target, path: path)
         }
     }
 }
@@ -163,7 +201,9 @@ private struct Summary: View {
     var body: some View {
         HStack(alignment: .firstTextBaseline, spacing: 18) {
             figure(node.human, "in view")
-            figure(node.fileCount.formatted(.number), "files")
+            if node.fileCount > 0 {
+                figure(node.fileCount.formatted(.number), "files")
+            }
             figure((node.children.count + node.omittedChildren).formatted(.number),
                    "items here")
             Spacer()

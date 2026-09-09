@@ -1,16 +1,19 @@
 import ReclaimKit
 import SwiftUI
 
-/// The Mac's open tabs. A tab is a scan, which is why this list is short.
+/// What this Mac can show: open tabs, and watched folders that have no tab.
 struct TabsView: View {
     @ObservedObject var session: MacSession
 
+    private var isEmpty: Bool { session.tabs.isEmpty && session.watched.isEmpty }
+
     var body: some View {
         Group {
-            if session.tabs.isEmpty {
+            if isEmpty {
                 Notice(icon: "macwindow",
-                       title: "No scans open",
-                       detail: "Scan a disk or a folder on your Mac and it will appear here.",
+                       title: "Nothing to browse",
+                       detail: "Scan a disk or a folder on your Mac, or add one to the "
+                         + "overnight watchlist, and it will appear here.",
                        action: ("Refresh", { Task { await session.refresh() } }))
             } else {
                 List {
@@ -20,16 +23,40 @@ struct TabsView: View {
                             .foregroundStyle(Theme.caution)
                             .listRowBackground(Theme.panel)
                     }
-                    ForEach(session.tabs) { tab in
-                        NavigationLink {
-                            BrowseView(session: session, tab: tab, path: nil, name: nil)
-                        } label: {
-                            TabRow(tab: tab)
+                    if !session.tabs.isEmpty {
+                        Section("Open tabs") {
+                            ForEach(session.tabs) { tab in
+                                NavigationLink {
+                                    BrowseView(session: session, source: .tab(tab),
+                                               path: nil, name: nil)
+                                } label: {
+                                    TabRow(tab: tab)
+                                }
+                                .listRowBackground(Theme.panel)
+                                // A tab that has nothing to show yet is a heading, not
+                                // a destination.
+                                .disabled(tab.totalBytes == 0 && !tab.isScanning)
+                            }
                         }
-                        .listRowBackground(Theme.panel)
-                        // A tab that has nothing to show yet is a heading, not
-                        // a destination.
-                        .disabled(tab.totalBytes == 0 && !tab.isScanning)
+                    }
+                    if !session.watched.isEmpty {
+                        Section {
+                            ForEach(session.watched) { watched in
+                                NavigationLink {
+                                    BrowseView(session: session, source: .watched(watched),
+                                               path: nil, name: nil)
+                                } label: {
+                                    WatchedRow(watched: watched)
+                                }
+                                .listRowBackground(Theme.panel)
+                                .disabled(watched.takenAt == nil)
+                            }
+                        } header: {
+                            Text("Watched overnight")
+                        } footer: {
+                            Text("Last recorded scan, not a live window. Small folders "
+                                 + "deep in the tree may be missing.")
+                        }
                     }
                 }
                 .scrollContentBackground(.hidden)
@@ -46,8 +73,8 @@ struct TabsView: View {
                 }
             }
         }
-        // Tabs change on the Mac while the phone is looking at them — a scan
-        // finishes, a window is closed — so the list is re-read on return.
+        // Tabs and the watchlist change on the Mac while the phone is looking
+        // at them, so the list is re-read on return.
         .task { await session.refresh() }
     }
 }
@@ -80,6 +107,37 @@ private struct TabRow: View {
                 Text("\(volume.freeHuman) free on \(volume.name)")
                     .font(.caption2)
                     .foregroundStyle(.secondary)
+            }
+        }
+        .padding(.vertical, 3)
+    }
+}
+
+private struct WatchedRow: View {
+    let watched: CompanionAPI.WatchedSummary
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            HStack(alignment: .firstTextBaseline) {
+                Text(watched.title).font(.headline)
+                Spacer()
+                Text(watched.takenAt == nil ? "—" : watched.totalHuman)
+                    .font(.subheadline.monospacedDigit())
+                    .foregroundStyle(watched.takenAt == nil ? .secondary : .primary)
+            }
+            Text(watched.target.abbreviatingMacHome)
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .lineLimit(1)
+                .truncationMode(.middle)
+            if let takenAt = watched.takenAt {
+                Text("As of \(takenAt.formatted(.relative(presentation: .named)))")
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+            } else {
+                Text("Not scanned yet")
+                    .font(.caption2)
+                    .foregroundStyle(Theme.caution)
             }
         }
         .padding(.vertical, 3)
