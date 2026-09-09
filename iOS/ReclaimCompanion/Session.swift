@@ -5,7 +5,7 @@ import UIKit
 
 /// One Mac, once the app has decided to talk to it.
 ///
-/// Owns the connection, the pairing state and the tab list. Views observe it;
+/// Owns the connection, the pairing state and what this Mac can show. Views observe it;
 /// nothing in here knows what a view looks like.
 @MainActor
 final class MacSession: ObservableObject {
@@ -20,6 +20,7 @@ final class MacSession: ObservableObject {
     let mac: DiscoveredMac
     @Published private(set) var phase: Phase = .connecting
     @Published private(set) var tabs: [CompanionAPI.TabSummary] = []
+    @Published private(set) var watched: [CompanionAPI.WatchedSummary] = []
     /// Set by a failed refresh, so a stale list can stay on screen with a note
     /// above it rather than being replaced by an error page.
     @Published private(set) var warning: String?
@@ -30,8 +31,8 @@ final class MacSession: ObservableObject {
         self.mac = mac
     }
 
-    /// Resolves the Mac, works out whether this device is paired, and loads the
-    /// tabs if it is.
+    /// Resolves the Mac, works out whether this device is paired, and loads
+    /// the tabs and watchlist if it is.
     func connect() async {
         phase = .connecting
         do {
@@ -92,14 +93,24 @@ final class MacSession: ObservableObject {
         return try await client.node(tab: tab, path: path)
     }
 
+    func watchedNode(target: String, path: String?) async throws -> CompanionAPI.Node {
+        guard let client else { throw CompanionClient.Failure.notPaired }
+        return try await client.watchedNode(target: target, path: path)
+    }
+
     func unpair() {
         TokenStore.forget(mac.id)
         tabs = []
+        watched = []
         Task { await connect() }
     }
 
     private func loadTabs(_ client: CompanionClient) async throws {
-        tabs = try await client.tabs()
+        async let tabs = client.tabs()
+        async let watched = client.watched()
+        self.tabs = try await tabs
+        // An older Mac has no `/watched` and answers 404. Tabs still work.
+        self.watched = (try? await watched) ?? []
     }
 
     private func askToPair() async {

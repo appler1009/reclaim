@@ -46,6 +46,27 @@ struct SnapshotStore {
         return stored.sorted { $0.takenAt > $1.takenAt }   // newest first
     }
 
+    /// The head of the file, which `record` writes newest-first.
+    ///
+    /// Companion list/node only need that one snapshot. Decoding the other
+    /// eleven is a few MB of JSON on the main actor per watched target, every
+    /// time the phone refreshes.
+    func newest(forTarget target: String) -> Snapshot? {
+        guard let data = try? Data(contentsOf: fileURL(forTarget: target)) else { return nil }
+        let decoder = JSONDecoder()
+        decoder.dateDecodingStrategy = .iso8601
+        return try? decoder.decode(NewestSnapshot.self, from: data).snapshot
+    }
+
+    /// One element of a history file, stopping there so the rest is not built.
+    private struct NewestSnapshot: Decodable {
+        let snapshot: Snapshot?
+        init(from decoder: Decoder) throws {
+            var container = try decoder.unkeyedContainer()
+            snapshot = container.isAtEnd ? nil : try container.decode(Snapshot.self)
+        }
+    }
+
     /// The most recent snapshot taken before `date`, which is what a fresh scan
     /// should be compared against.
     func mostRecent(forTarget target: String, before date: Date = Date()) -> Snapshot? {

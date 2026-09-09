@@ -160,6 +160,49 @@ public enum CompanionAPI {
         public init(tabs: [TabSummary]) { self.tabs = tabs }
     }
 
+    // MARK: - Watched
+
+    /// A watchlist target, as a row beneath the open tabs.
+    ///
+    /// Not a tab: there is no live tree, only the latest snapshot, which is why
+    /// `takenAt` is the fact that matters and why a target with no snapshot yet
+    /// is still listed — it is watched, it just has nothing to open.
+    public struct WatchedSummary: Codable, Sendable, Equatable, Identifiable {
+        public var id: String { target }
+        public let target: String
+        /// Short name, the way a tab titles a scan root.
+        public let title: String
+        /// When the snapshot being shown was taken. Nil if this target has
+        /// never been scanned.
+        public let takenAt: Date?
+        public let totalBytes: UInt64
+        public let totalHuman: String
+        public let fileCount: Int
+
+        public init(target: String, title: String, takenAt: Date?,
+                    totalBytes: UInt64, totalHuman: String, fileCount: Int) {
+            self.target = target
+            self.title = title
+            self.takenAt = takenAt
+            self.totalBytes = totalBytes
+            self.totalHuman = totalHuman
+            self.fileCount = fileCount
+        }
+    }
+
+    public struct WatchedList: Codable, Sendable, Equatable {
+        public let watched: [WatchedSummary]
+
+        public init(watched: [WatchedSummary]) { self.watched = watched }
+    }
+
+    /// What a scan root is called when there is no window to name it.
+    public static func shortTitle(forPath path: String) -> String {
+        if path == "/" { return "Startup Disk" }
+        let name = URL(fileURLWithPath: path).lastPathComponent
+        return name.isEmpty ? path : name
+    }
+
     // MARK: - Nodes
 
     /// A direct child of the folder being viewed: one tile on the map, one row
