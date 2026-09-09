@@ -119,10 +119,21 @@ final class AppModel: ObservableObject {
     private var historyObserver: NSObjectProtocol?
     /// Counts enumerations so a slow one cannot overwrite a newer result.
     private var volumeRefresh = 0
+    /// Tells this window when the Trash it is reporting on has changed, so
+    /// emptying it in Finder is not a figure left standing on the strip.
+    private let trashWatcher = TrashWatcher()
 
     init(snapshotStore: SnapshotStore = SnapshotStore()) {
         self.snapshotStore = snapshotStore
         nightly.action = { [weak self] in self?.runNightlyRescan() }
+        // Both figures move together when the Trash is emptied: what it holds
+        // goes to nothing, and the space it held comes back as free. Refreshing
+        // one and not the other trades a stale number for an inconsistent pair.
+        trashWatcher.onChange = { [weak self] in
+            guard let self else { return }
+            self.refreshTrashSize()
+            if let url = self.scannedURL { self.readVolumeInfo(for: url) }
+        }
         refreshVolumes()
         refreshRecentScans()
         hasFullDiskAccess = Self.probeFullDiskAccess()
@@ -352,6 +363,12 @@ final class AppModel: ObservableObject {
         breakdown = Breakdown()
         selectedItem = nil
         readVolumeInfo(for: url)
+        // The strip's Trash figure describes the volume being scanned, so the
+        // Trash being watched has to be that volume's. Armed here rather than
+        // inside `readVolumeInfo`, which the watcher itself calls back into:
+        // re-arming on every change would tear the watch down and rebuild it
+        // for each event it reported.
+        trashWatcher.watch(volumeContaining: url)
         refreshVolumes()
 
         Log.info("scan started", ["path": url.path])
