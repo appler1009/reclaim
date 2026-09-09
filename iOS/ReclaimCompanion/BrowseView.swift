@@ -88,7 +88,7 @@ struct BrowseView: View {
                         .padding(.horizontal, 16)
                         .padding(.top, 8)
                 }
-                Summary(node: node)
+                Summary(node: node, showFileCount: source.asOf == nil)
 
                 if node.children.isEmpty {
                     Notice(icon: "tray", title: "Nothing in here",
@@ -197,11 +197,14 @@ enum BrowseSource {
 /// The strip of numbers, in the Mac's own order: this folder, then what is in it.
 private struct Summary: View {
     let node: CompanionAPI.Node
+    /// Live tabs have a real count, including zero. Snapshots do not keep
+    /// per-folder counts, so that figure is omitted rather than shown as 0.
+    let showFileCount: Bool
 
     var body: some View {
         HStack(alignment: .firstTextBaseline, spacing: 18) {
             figure(node.human, "in view")
-            if node.fileCount > 0 {
+            if showFileCount {
                 figure(node.fileCount.formatted(.number), "files")
             }
             figure((node.children.count + node.omittedChildren).formatted(.number),

@@ -15,7 +15,7 @@ enum HistoryBrowse {
         return watchlist.targets.compactMap { target in
             let target = TargetPath.normalise(target)
             guard !hidden.contains(target) else { return nil }
-            let newest = store.snapshots(forTarget: target).first
+            let newest = store.newest(forTarget: target)
             return CompanionAPI.WatchedSummary(
                 target: target,
                 title: CompanionAPI.shortTitle(forPath: target),
@@ -29,12 +29,20 @@ enum HistoryBrowse {
     /// One folder of a snapshot, shaped like a tab's node so the phone can
     /// reuse the same screen. Colour, per-child file counts and by-type totals
     /// are what a snapshot does not keep, so they come out empty or guessed.
-    static func node(target: String, path: String?, store: SnapshotStore,
-                     limit: Int = LiveTabs.childLimit) -> CompanionAPI.Node? {
+    enum Lookup {
+        /// On the watchlist, but history has never recorded it.
+        case unscanned
+        /// A snapshot exists; this path was not kept in it.
+        case missing
+        case found(CompanionAPI.Node)
+    }
+
+    static func lookup(target: String, path: String?, store: SnapshotStore,
+                       limit: Int = LiveTabs.childLimit) -> Lookup {
         let target = TargetPath.normalise(target)
-        guard let snapshot = store.snapshots(forTarget: target).first else { return nil }
+        guard let snapshot = store.newest(forTarget: target) else { return .unscanned }
         let path = path.map(trimmed) ?? target
-        guard let bytes = snapshot.bytes(forPath: path) else { return nil }
+        guard let bytes = snapshot.bytes(forPath: path) else { return .missing }
 
         let prefix = path.hasSuffix("/") ? path : path + "/"
         let children = snapshot.entries
@@ -45,7 +53,7 @@ enum HistoryBrowse {
             .sorted { $0.bytes > $1.bytes }
         let shown = Array(children.prefix(max(0, limit)))
 
-        return CompanionAPI.Node(
+        let node = CompanionAPI.Node(
             tabID: target,
             path: path,
             name: path == target ? CompanionAPI.shortTitle(forPath: target)
@@ -71,6 +79,7 @@ enum HistoryBrowse {
             },
             types: [],
             omittedChildren: children.count - shown.count)
+        return .found(node)
     }
 
     private static func crumbs(target: String, path: String) -> [CompanionAPI.Crumb] {

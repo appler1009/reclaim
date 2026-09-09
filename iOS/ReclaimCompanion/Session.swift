@@ -109,7 +109,8 @@ final class MacSession: ObservableObject {
         async let tabs = client.tabs()
         async let watched = client.watched()
         self.tabs = try await tabs
-        self.watched = try await watched
+        // An older Mac has no `/watched` and answers 404. Tabs still work.
+        self.watched = (try? await watched) ?? []
     }
 
     private func askToPair() async {

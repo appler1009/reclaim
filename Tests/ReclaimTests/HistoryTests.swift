@@ -113,6 +113,7 @@ struct SnapshotStoreTests {
         #expect(history.count == 2)
         #expect(history.first?.totalBytes == 2_000, "newest first")
         #expect(history.last?.totalBytes == 1_000)
+        #expect(store.newest(forTarget: "/tmp/one")?.totalBytes == 2_000)
     }
 
     @Test func onlyTheRecentPastIsKept() throws {

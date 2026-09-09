@@ -57,7 +57,9 @@ enum CompanionRouter {
                 watched: HistoryBrowse.summaries(
                     from: watchlist ?? .shared,
                     store: history ?? SnapshotStore(),
-                    hiding: Set(LiveTabs.models.compactMap { $0.scannedURL?.path }))))
+                    hiding: Set(LiveTabs.models.compactMap {
+                        $0.scanRoot != nil ? $0.scannedURL?.path : nil
+                    }))))
 
         case ("GET", ["watched", "node"]):
             return watchedNode(request: request,
@@ -129,14 +131,16 @@ enum CompanionRouter {
             return .failure("404 Not Found", "That folder is not on the watchlist.")
         }
         let limit = request.query["limit"].flatMap(Int.init) ?? LiveTabs.childLimit
-        guard let node = HistoryBrowse.node(target: target, path: request.query["path"],
-                                            store: history, limit: min(limit, 5000)) else {
-            return history.snapshots(forTarget: TargetPath.normalise(target)).isEmpty
-                ? .failure("409 Conflict", "That folder has not been scanned yet.")
-                : .failure("404 Not Found",
-                           "\(request.query["path"] ?? "") is not in the last scan of that folder.")
+        switch HistoryBrowse.lookup(target: target, path: request.query["path"],
+                                    store: history, limit: min(limit, 5000)) {
+        case .unscanned:
+            return .failure("409 Conflict", "That folder has not been scanned yet.")
+        case .missing:
+            return .failure("404 Not Found",
+                            "\(request.query["path"] ?? "") is not in the last scan of that folder.")
+        case .found(let node):
+            return encode(node)
         }
-        return encode(node)
     }
 
     // MARK: - Encoding

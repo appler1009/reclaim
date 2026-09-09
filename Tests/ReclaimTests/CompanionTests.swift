@@ -179,12 +179,33 @@ struct HistoryBrowseTests {
         let store = tempHistory()
         store.record(Snapshot(root: sampleTree(at: "/tmp/watched"),
                               target: "/tmp/watched", measure: .physical))
-        let node = try #require(HistoryBrowse.node(target: "/tmp/watched",
-                                                   path: "/tmp/watched/Media",
-                                                   store: store))
+        let node = try #require({
+            if case .found(let node) = HistoryBrowse.lookup(target: "/tmp/watched",
+                                                            path: "/tmp/watched/Media",
+                                                            store: store) { return node }
+            return nil
+        }())
         #expect(node.breadcrumb.map(\.path) == ["/tmp/watched", "/tmp/watched/Media"])
         #expect(node.fileCount == 0, "per-folder counts are not in a snapshot")
         #expect(node.types.isEmpty)
+    }
+
+    @Test func aTargetWithNoFileIsUnscanned() {
+        if case .unscanned = HistoryBrowse.lookup(target: "/tmp/watched", path: nil,
+                                                  store: tempHistory()) {} else {
+            Issue.record("expected unscanned")
+        }
+    }
+
+    @Test func aPathNotKeptInTheSnapshotIsMissing() {
+        let store = tempHistory()
+        store.record(Snapshot(root: sampleTree(at: "/tmp/watched"),
+                              target: "/tmp/watched", measure: .physical))
+        if case .missing = HistoryBrowse.lookup(target: "/tmp/watched",
+                                                path: "/tmp/watched/gone",
+                                                store: store) {} else {
+            Issue.record("expected missing")
+        }
     }
 }
 
@@ -349,6 +370,26 @@ struct CompanionRouterTests {
             service: service, watchlist: list, history: store)
         let payload = try decode(CompanionAPI.WatchedList.self, response)
         #expect(payload.watched.isEmpty, "the tab already is that scan")
+    }
+
+    @Test func aTabStillScanningDoesNotHideLastNightsSnapshot() throws {
+        let service = isolatedService()
+        let token = service.paired.admit(name: "Phone")
+        let model = AppModel()
+        model.scannedURL = URL(fileURLWithPath: "/tmp/watched")
+        #expect(model.scanRoot == nil)
+        let list = isolatedWatchlist()
+        list.add("/tmp/watched")
+        let store = tempHistory()
+        store.record(Snapshot(root: sampleTree(at: "/tmp/watched"),
+                              target: "/tmp/watched", measure: .physical))
+
+        let response = CompanionRouter.respond(
+            to: get("/api/v1/watched", token: token),
+            service: service, watchlist: list, history: store)
+        let payload = try decode(CompanionAPI.WatchedList.self, response)
+        #expect(payload.watched.map(\.target) == ["/tmp/watched"],
+                "the tab has no tree yet; last night's snapshot is still the one to browse")
     }
 
     @Test func aWatchedSnapshotServesItsRootAndAFolderInside() throws {
