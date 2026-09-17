@@ -81,7 +81,8 @@ struct LocalSnapshotTests {
 @Suite("Space report")
 struct SpaceReportTests {
     private let target = "/"
-    private let quietProbe = SpaceProbe(localSnapshots: { _ in [] }, trashBytes: { _ in nil })
+    private let quietProbe = SpaceProbe(localSnapshots: { _ in [] }, trashBytes: { _ in nil },
+                                        otherVolumes: { _ in [] })
 
     private func store() -> (SnapshotStore, URL) {
         let directory = URL(fileURLWithPath: NSTemporaryDirectory())
@@ -125,6 +126,24 @@ struct SpaceReportTests {
         #expect(change.unaccounted == 13, "which is where the rest of it went")
         #expect(change.availableHuman.hasPrefix("−"))
         #expect(change.scannedHuman.hasPrefix("+"))
+    }
+
+    @Test func theSummaryNamesTheOtherVolumesInTheContainer() throws {
+        let (store, directory) = store()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        store.record(snapshot(target: target, scanned: 200, capacity: 245,
+                              available: 17, free: 17, at: Date()))
+        var probe = quietProbe
+        probe.otherVolumes = { _ in
+            [ContainerVolumes.Volume(name: "Preboot", role: "Preboot", bytes: 10),
+             ContainerVolumes.Volume(name: "VM", role: "VM", bytes: 7)]
+        }
+
+        let report = try #require(DiskQueries(store: store).space(target: target, probe: probe))
+        #expect(report.otherVolumesBytes == 17)
+        #expect(report.latest.unaccounted == 28, "history keeps the raw gap")
+        #expect(report.summary.contains("other volumes"))
+        #expect(report.summary.contains("Preboot"))
     }
 
     @Test func theBaselineCanBePickedByDate() throws {

@@ -54,6 +54,10 @@ final class AppModel: ObservableObject {
     /// above because it also knows what the system holds as purgeable, which is
     /// space a scan will never find a file for.
     @Published var volumeSpace: VolumeSpace?
+    /// The other volumes in the scanned volume's APFS container. They draw on
+    /// the same pool of space, so the volume's occupied figure includes them,
+    /// but a scan never walks into them.
+    @Published private(set) var otherVolumes: [ContainerVolumes.Volume] = []
     /// What is sitting in this volume's Trash: spoken for, but not freed until
     /// the Trash is emptied.
     @Published var trash = TrashInspector.Contents()
@@ -122,6 +126,7 @@ final class AppModel: ObservableObject {
     /// The same, for Trash measurements: emptying a large Trash starts a slow
     /// walk that a later, quicker one can overtake.
     private var trashRefresh = 0
+    private var containerRefresh = 0
     /// Tells this window when the Trash it is reporting on has changed, so
     /// emptying it in Finder is not a figure left standing on the strip.
     private let trashWatcher = TrashWatcher()
@@ -390,6 +395,7 @@ final class AppModel: ObservableObject {
         // for each event it reported.
         trashWatcher.watch(volumeContaining: url)
         refreshVolumes()
+        refreshOtherVolumes(for: url)
 
         Log.info("scan started", ["path": url.path])
         // What this window is for has just changed, which is the arrangement
@@ -647,6 +653,27 @@ final class AppModel: ObservableObject {
         return node
     }
 
+    /// Asks `diskutil`, a process launch, so off the main thread. Started with
+    /// the scan: it describes the container, which the scan does not change,
+    /// and it is back long before any whole-volume walk is.
+    private func refreshOtherVolumes(for url: URL) {
+        containerRefresh &+= 1
+        let generation = containerRefresh
+        DispatchQueue.global(qos: .utility).async { [weak self] in
+            let mount = VolumeSpace.read(for: url)?.volume ?? url.path
+            let found = ContainerVolumes.others(forMount: mount)
+            DispatchQueue.main.async {
+                guard let self, generation == self.containerRefresh else { return }
+                self.otherVolumes = found
+            }
+        }
+    }
+
+    /// Test seam: the container's other volumes without asking `diskutil`.
+    func setOtherVolumesForTesting(_ volumes: [ContainerVolumes.Volume]) {
+        otherVolumes = volumes
+    }
+
     private func readVolumeInfo(for url: URL) {
         guard let space = VolumeSpace.read(for: url) else { return }
         apply(space)
@@ -670,9 +697,21 @@ final class AppModel: ObservableObject {
               let space = volumeSpace, let root = scanRoot,
               let target = scannedURL?.path, space.covers(target: target) else { return nil }
         let scanned = root.size(measure)
-        guard space.used > scanned else { return nil }
-        let gap = space.used - scanned
+        let accounted = scanned + (otherVolumesBytes ?? 0)
+        guard space.used > accounted else { return nil }
+        let gap = space.used - accounted
         return gap >= Self.unaccountedFloor ? gap : nil
+    }
+
+    /// Occupied space that sits in the container's other volumes — Preboot, VM,
+    /// Recovery on a startup disk. Held to the same conditions as the gap it is
+    /// taken out of, since it only explains that gap.
+    var otherVolumesBytes: UInt64? {
+        guard measure == .physical, !isScanning,
+              let space = volumeSpace, let target = scannedURL?.path,
+              space.covers(target: target) else { return nil }
+        let bytes = otherVolumes.reduce(0) { $0 + $1.bytes }
+        return bytes >= Self.unaccountedFloor ? bytes : nil
     }
 
     /// Below this, the gap says more about timing than about the disk.
