@@ -61,6 +61,30 @@ struct ScannerTests {
         #expect(counted.physicalSize == deduped.physicalSize * 2)
     }
 
+    @Test func firmlinkedDataDirectoriesAreSkippedFromAbove() {
+        let duplicates = Firmlinks.duplicates(underScanRoot: "/")
+        #expect(duplicates.contains("/System/Volumes/Data/Users"))
+        #expect(duplicates.contains("/System/Volumes/Data/Applications"))
+        // Nothing only the Data side reaches is ever skipped.
+        #expect(!duplicates.contains("/System/Volumes/Data/.Spotlight-V100"))
+        #expect(Firmlinks.duplicates(underScanRoot: "/System/Volumes") == duplicates)
+    }
+
+    @Test func firmlinksAreIgnoredWhenTheScanDoesNotCrossTheDataMount() {
+        #expect(Firmlinks.duplicates(underScanRoot: "/System/Volumes/Data").isEmpty)
+        #expect(Firmlinks.duplicates(underScanRoot: "/System/Volumes/Data/Users").isEmpty)
+        #expect(Firmlinks.duplicates(underScanRoot: NSHomeDirectory()).isEmpty)
+    }
+
+    @Test func aFirmlinkTableThatDoesNotMatchTheDiskSkipsNothing() throws {
+        let fixture = try Fixture()
+        defer { fixture.cleanUp() }
+        let table = fixture.root.appendingPathComponent("firmlinks")
+        // Real path, but it points at a Data directory that is not the same inode.
+        try "/Users\tApplications\n/nope\tnope\n".write(to: table, atomically: true, encoding: .utf8)
+        #expect(Firmlinks.duplicates(underScanRoot: "/", table: table.path).isEmpty)
+    }
+
     @Test func hiddenFilesCanBeExcluded() throws {
         let fixture = try Fixture()
         defer { fixture.cleanUp() }
