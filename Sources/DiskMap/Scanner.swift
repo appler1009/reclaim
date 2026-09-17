@@ -212,10 +212,12 @@ enum Scanner {
                             isDirectory: true,
                             modified: Date(timeIntervalSince1970: TimeInterval(st.st_mtimespec.tv_sec)),
                             fileCount: 0)
+        let skip = Firmlinks.duplicates(underScanRoot: path)
         // Read the first level up front, so the caller has something to show and
         // the branch numbering is fixed before any worker starts.
         let topLevel = read(job: .init(node: root, path: path, branch: -1),
                             rootDev: st.st_dev,
+                            skip: skip,
                             options: options,
                             session: session,
                             assignBranches: true)
@@ -240,6 +242,7 @@ enum Scanner {
                     }
                     let subdirectories = read(job: job,
                                               rootDev: st.st_dev,
+                                              skip: skip,
                                               options: options,
                                               session: session)
                     queue.push(subdirectories)
@@ -258,6 +261,7 @@ enum Scanner {
     /// subdirectories that still need visiting.
     private static func read(job: DirectoryQueue.Job,
                              rootDev: dev_t,
+                             skip: Set<String>,
                              options: ScanOptions,
                              session: ScanSession,
                              assignBranches: Bool = false) -> [DirectoryQueue.Job] {
@@ -291,6 +295,7 @@ enum Scanner {
 
             if mode == S_IFDIR {
                 if options.stayOnVolume && st.st_dev != rootDev { continue }
+                if skip.contains(fullPath) { continue }
                 let node = FileItem(name: name,
                                     isDirectory: true,
                                     modified: Date(timeIntervalSince1970: TimeInterval(st.st_mtimespec.tv_sec)),
@@ -388,5 +393,42 @@ enum Scanner {
                  logicalSize: UInt64(max(0, st.st_size)),
                  physicalSize: UInt64(max(0, st.st_blocks)) * 512,
                  modified: Date(timeIntervalSince1970: TimeInterval(st.st_mtimespec.tv_sec)))
+    }
+}
+
+/// The System and Data volumes are joined by firmlinks: `/Users` and
+/// `/System/Volumes/Data/Users` are the same directory, with the same device
+/// and inode, so neither `stayOnVolume` nor hard-link counting notices. A scan
+/// of `/` would walk the whole Data volume twice.
+///
+/// The firmlinked side is the one people recognise, so it is kept and the copy
+/// under the Data mount is skipped. Whatever lives only on the Data side
+/// (Spotlight's index, `MobileSoftwareUpdate`) is still counted there.
+enum Firmlinks {
+    static let dataMount = "/System/Volumes/Data"
+    static let table = "/usr/share/firmlinks"
+
+    /// Paths under the Data mount that repeat a firmlinked directory, for a scan
+    /// rooted at `scanRoot`. Empty unless the scan would walk into the Data mount
+    /// from above — scanning the Data volume itself reaches each directory once.
+    static func duplicates(underScanRoot scanRoot: String, table: String = table) -> Set<String> {
+        let rootPrefix = scanRoot.hasSuffix("/") ? scanRoot : scanRoot + "/"
+        guard dataMount.hasPrefix(rootPrefix),
+              let contents = try? String(contentsOfFile: table, encoding: .utf8) else { return [] }
+
+        var paths = Set<String>()
+        for line in contents.split(separator: "\n") {
+            let fields = line.split(separator: "\t")
+            guard fields.count == 2 else { continue }
+            let linked = String(fields[0])
+            let duplicate = dataMount + "/" + fields[1]
+            // Only skip what really is the same directory, so a stale or odd
+            // table can never hide data.
+            var a = stat(), b = stat()
+            guard stat(linked, &a) == 0, lstat(duplicate, &b) == 0,
+                  a.st_dev == b.st_dev, a.st_ino == b.st_ino else { continue }
+            paths.insert(duplicate)
+        }
+        return paths
     }
 }
