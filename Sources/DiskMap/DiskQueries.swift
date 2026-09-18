@@ -14,6 +14,9 @@ struct SpaceProbe {
     var trashBytes: (String) -> UInt64? = { volume in
         TrashInspector.contents(forVolumeContaining: URL(fileURLWithPath: volume)).bytes
     }
+    var otherVolumes: (String) -> [ContainerVolumes.Volume] = { volume in
+        ContainerVolumes.others(forMount: volume)
+    }
 }
 
 struct DiskQueries {
@@ -126,6 +129,12 @@ struct DiskQueries {
         /// Read live: bytes in this volume's Trash, spoken for but not freed.
         let trashBytes: UInt64?
         let trashHuman: String?
+        /// Read live: volumes in the same APFS container — Preboot, VM, Recovery
+        /// on a startup disk. Their blocks are part of `used` but no scan of
+        /// this volume walks them, so they explain part of `unaccounted`.
+        let otherVolumes: [ContainerVolumes.Volume]
+        let otherVolumesBytes: UInt64
+        let otherVolumesHuman: String
         /// The finding in a sentence, so an agent does not have to derive it.
         let summary: String
     }
@@ -280,6 +289,8 @@ struct DiskQueries {
 
         let snapshots = probe.localSnapshots(volume.volume)
         let trash = probe.trashBytes(volume.volume)
+        let others = probe.otherVolumes(volume.volume)
+        let othersBytes = others.reduce(UInt64(0)) { $0 + $1.bytes }
         return SpaceReport(target: target,
                            volume: volume.volume,
                            coversWholeVolume: coversWholeVolume,
@@ -289,9 +300,13 @@ struct DiskQueries {
                            localSnapshots: snapshots,
                            trashBytes: trash,
                            trashHuman: trash.map(ByteFormat.string),
+                           otherVolumes: others,
+                           otherVolumesBytes: othersBytes,
+                           otherVolumesHuman: ByteFormat.string(othersBytes),
                            summary: Self.summarise(latest: latest, change: change,
                                                    coversWholeVolume: coversWholeVolume,
-                                                   snapshots: snapshots, trash: trash))
+                                                   snapshots: snapshots, trash: trash,
+                                                   otherVolumes: others))
     }
 
     private static func point(for snapshot: Snapshot, coversWholeVolume: Bool) -> SpacePoint? {
@@ -327,7 +342,8 @@ struct DiskQueries {
     private static func summarise(latest: SpacePoint, change: SpaceChange?,
                                   coversWholeVolume: Bool,
                                   snapshots: [LocalSnapshots.Entry],
-                                  trash: UInt64?) -> String {
+                                  trash: UInt64?,
+                                  otherVolumes: [ContainerVolumes.Volume] = []) -> String {
         var parts: [String] = []
         if let change, change.available != 0 {
             parts.append("Free space \(change.available < 0 ? "fell" : "rose") by "
@@ -346,6 +362,15 @@ struct DiskQueries {
             if let unaccounted = latest.unaccounted, unaccounted > 0 {
                 parts.append("\(ByteFormat.string(UInt64(unaccounted))) of the disk is occupied by "
                              + "something the scan cannot see.")
+                let others = otherVolumes.reduce(UInt64(0)) { $0 + $1.bytes }
+                if others > 0 {
+                    let named = otherVolumes
+                        .map { "\($0.name) \(ByteFormat.string($0.bytes))" }
+                        .joined(separator: ", ")
+                    parts.append("\(ByteFormat.string(min(others, UInt64(unaccounted)))) of that is other "
+                                 + "volumes sharing the same disk space, which the scan does not walk: "
+                                 + "\(named).")
+                }
             }
         } else if coversWholeVolume {
             parts.append("The last scan counted the files' own sizes rather than the space "

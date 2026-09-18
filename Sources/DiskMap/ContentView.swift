@@ -306,6 +306,14 @@ private struct HeaderBar: View {
                     Metric(value: ByteFormat.string(model.volumeFree), caption: "Free on volume")
                         .help("Space still available on the whole disk this scan came from — not part of the totals to the left.")
                 }
+                if let other = model.otherVolumesBytes {
+                    // Beside the gap it is taken out of: these gigabytes were
+                    // part of it until they could be named.
+                    Metric(value: ByteFormat.string(other), caption: "Other volumes")
+                        .contentTransition(.numericText())
+                        .animation(.snappy(duration: 0.22), value: other)
+                        .help(otherVolumesHelp)
+                }
                 if let unaccounted = model.unaccountedBytes {
                     // Sits with free space rather than with the totals: it is a
                     // fact about the volume, and the one figure here that no
@@ -358,6 +366,16 @@ private struct HeaderBar: View {
         .padding(.horizontal, 18)
         .frame(height: 56)
         .background(Color.panel)
+    }
+
+    /// Names each volume, largest first, so the figure can be checked.
+    private var otherVolumesHelp: String {
+        let listed = model.otherVolumes
+            .map { "\($0.name) \(ByteFormat.string($0.bytes))" }
+            .joined(separator: ", ")
+        return "Volumes sharing this disk's space that a scan of it does not walk into: "
+            + listed + ". Their blocks count as used on this volume, so they are not part of "
+            + "what is unaccounted."
     }
 
     /// Says what the gap is without guessing which cause it was: the honest
