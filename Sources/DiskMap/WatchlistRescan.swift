@@ -7,25 +7,53 @@ enum UnattendedScan {
     @discardableResult
     static func run(path: String, store: SnapshotStore = SnapshotStore()) -> Snapshot? {
         let url = TargetPath.normalise(URL(fileURLWithPath: path))
+        if MemoryPressure.isElevated {
+            Log.info("unattended scan skipped", ["reason": "memoryPressure", "target": url.path])
+            return nil
+        }
+        if let refusal = ScanPaths.refusal(of: url) {
+            Log.info("unattended scan skipped", ["reason": refusal.code, "target": url.path])
+            return nil
+        }
         // A watched volume that is not mounted is the ordinary case, not a
         // failure: say so quietly and leave the history alone.
         guard FileManager.default.fileExists(atPath: url.path) else {
             Log.info("unattended scan skipped", ["reason": "missing", "target": url.path])
             return nil
         }
-        guard let root = Scanner.scan(url: url, options: ScanOptions(), session: ScanSession()) else {
+        let session = ScanSession()
+        session.stopsWhenLarge = true
+        let permit = ScanGate.shared.acquire(unattended: true) { session.cancel() }
+        defer { permit.release() }
+        if MemoryPressure.isElevated || session.isCancelled {
+            Log.info("unattended scan skipped", ["reason": "memoryPressure", "target": url.path])
+            return nil
+        }
+        guard let summary = Scanner.summarize(url: url, options: ScanOptions(), session: session) else {
             Log.warning("unattended scan failed", ["target": url.path])
             return nil
         }
-        let snapshot = Snapshot(root: root, target: url.path, measure: .physical,
-                                volume: VolumeSpace.read(for: url))
+        let draft = Snapshot.Draft(target: url.path,
+                                   totalBytes: summary.physicalSize,
+                                   fileCount: summary.fileCount,
+                                   unreadableCount: summary.unreadableCount,
+                                   collected: summary.entries)
+        return record(draft, store: store, volume: VolumeSpace.read(for: url))
+    }
+
+    /// Files a draft that was taken from a tree already in memory.
+    @discardableResult
+    static func record(_ draft: Snapshot.Draft,
+                       store: SnapshotStore = SnapshotStore(),
+                       volume: VolumeSpace? = nil) -> Snapshot {
+        let url = URL(fileURLWithPath: draft.target)
+        let snapshot = Snapshot(draft: draft, measure: .physical,
+                                volume: volume ?? VolumeSpace.read(for: url))
         store.record(snapshot)
         Log.info("unattended scan recorded", ["target": url.path,
-                                              "bytes": "\(snapshot.totalBytes)"])
-        // Announced here, with the write, rather than by whoever asked for the
-        // scan: an agent's `scan_now` leaves the same stale list behind that a
-        // watchlist run does, and only a scan that actually recorded something
-        // is news.
+                                              "bytes": "\(snapshot.totalBytes)",
+                                              "files": "\(snapshot.fileCount)",
+                                              "footprint": "\(ProcessMemory.physFootprint)"])
         DispatchQueue.main.async {
             NotificationCenter.default.post(name: .reclaimHistoryChanged, object: nil,
                                             userInfo: ["target": url.path])
@@ -76,7 +104,9 @@ final class WatchlistRescan {
         self.watchlist = watchlist
         self.schedule = schedule
         self.scan = scan
-        self.windowWillHandle = windowWillHandle ?? { LiveTabs.canRescan($0) }
+        self.windowWillHandle = windowWillHandle ?? {
+            LiveTabs.canRescan($0) || LiveTabs.willRefreshContainer(of: $0)
+        }
         self.dispatch = dispatch ?? { work in Self.queue.async(execute: work) }
         schedule.action = { [weak self] in self?.runDue() }
         schedule.isArmed = !watchlist.targets.isEmpty
@@ -107,11 +137,16 @@ final class WatchlistRescan {
         guard !targets.isEmpty else { return [] }
         var taken: [String] = []
         for target in targets {
-            // A window showing this target rescans it tonight anyway, and does
-            // so visibly: it redraws the map as well as writing history. The
-            // claim is deliberately not taken here, so that window can have it.
+            // A window showing this target, or a tree that contains it, rescans
+            // tonight anyway. The contained folder's snapshot is written from
+            // that tree when the walk finishes.
             guard !windowWillHandle(target) else {
                 Log.info("watchlist rescan skipped", ["reason": "windowHasIt", "target": target])
+                continue
+            }
+            if let draft = LiveTabs.freshDraft(for: target) {
+                Log.info("watchlist rescan skipped", ["reason": "openTree", "target": target])
+                dispatch { _ = UnattendedScan.record(draft) }
                 continue
             }
             // Or it may already have run it, minutes ago.

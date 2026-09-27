@@ -3,49 +3,49 @@ import ReclaimKit
 
 /// Bytes and file counts per file family, rolled up for a folder.
 ///
-/// Kept on every directory so the sidebar's by-type summary and a folder tile's
-/// colour are lookups instead of subtree walks. Before this, navigating into a
-/// large folder re-classified every file underneath it — filename parsing in
-/// `FileFamily.of` was the top of the profile, and the worst navigation step
-/// took 88 ms.
+/// Kept on directories the interface is likely to show, so the sidebar's
+/// by-type summary and a folder tile's colour are lookups instead of subtree
+/// walks. The slots are inline: the previous form was three heap arrays per
+/// folder, and every file built a throwaway set of those while a parent summed
+/// itself.
 struct FamilyTotals {
-    private(set) var physical: [UInt64]
-    private(set) var logical: [UInt64]
-    private(set) var counts: [Int32]
+    private var physicalSlots = Slots()
+    private var logicalSlots = Slots()
+    private var countSlots = CountSlots()
 
     static let slots = FileFamily.allCases.count
 
-    init() {
-        physical = [UInt64](repeating: 0, count: Self.slots)
-        logical = [UInt64](repeating: 0, count: Self.slots)
-        counts = [Int32](repeating: 0, count: Self.slots)
-    }
+    init() {}
 
     init(family: FileFamily, physical physicalSize: UInt64, logical logicalSize: UInt64) {
-        self.init()
         let slot = family.index
-        physical[slot] = physicalSize
-        logical[slot] = logicalSize
-        counts[slot] = 1
+        physicalSlots[slot] = physicalSize
+        logicalSlots[slot] = logicalSize
+        countSlots[slot] = 1
     }
 
     func bytes(_ measure: SizeMeasure) -> [UInt64] {
-        measure == .physical ? physical : logical
+        let source = measure == .physical ? physicalSlots : logicalSlots
+        return (0 ..< Self.slots).map { source[$0] }
+    }
+
+    var counts: [Int32] {
+        (0 ..< Self.slots).map { countSlots[$0] }
     }
 
     mutating func add(_ other: FamilyTotals) {
         for slot in 0 ..< Self.slots {
-            physical[slot] &+= other.physical[slot]
-            logical[slot] &+= other.logical[slot]
-            counts[slot] += other.counts[slot]
+            physicalSlots[slot] &+= other.physicalSlots[slot]
+            logicalSlots[slot] &+= other.logicalSlots[slot]
+            countSlots[slot] += other.countSlots[slot]
         }
     }
 
     mutating func subtract(_ other: FamilyTotals) {
         for slot in 0 ..< Self.slots {
-            physical[slot] -= min(physical[slot], other.physical[slot])
-            logical[slot] -= min(logical[slot], other.logical[slot])
-            counts[slot] = max(0, counts[slot] - other.counts[slot])
+            physicalSlots[slot] -= min(physicalSlots[slot], other.physicalSlots[slot])
+            logicalSlots[slot] -= min(logicalSlots[slot], other.logicalSlots[slot])
+            countSlots[slot] = max(0, countSlots[slot] - other.countSlots[slot])
         }
     }
 
@@ -59,5 +59,76 @@ struct FamilyTotals {
             best = slot
         }
         return bestValue == 0 ? .other : FileFamily.allCases[best]
+    }
+
+    /// Nine `UInt64`s, stored in the struct rather than on the heap.
+    private struct Slots {
+        var v0: UInt64 = 0, v1: UInt64 = 0, v2: UInt64 = 0
+        var v3: UInt64 = 0, v4: UInt64 = 0, v5: UInt64 = 0
+        var v6: UInt64 = 0, v7: UInt64 = 0, v8: UInt64 = 0
+
+        subscript(index: Int) -> UInt64 {
+            get {
+                switch index {
+                case 0: return v0
+                case 1: return v1
+                case 2: return v2
+                case 3: return v3
+                case 4: return v4
+                case 5: return v5
+                case 6: return v6
+                case 7: return v7
+                default: return v8
+                }
+            }
+            set {
+                switch index {
+                case 0: v0 = newValue
+                case 1: v1 = newValue
+                case 2: v2 = newValue
+                case 3: v3 = newValue
+                case 4: v4 = newValue
+                case 5: v5 = newValue
+                case 6: v6 = newValue
+                case 7: v7 = newValue
+                default: v8 = newValue
+                }
+            }
+        }
+    }
+
+    private struct CountSlots {
+        var v0: Int32 = 0, v1: Int32 = 0, v2: Int32 = 0
+        var v3: Int32 = 0, v4: Int32 = 0, v5: Int32 = 0
+        var v6: Int32 = 0, v7: Int32 = 0, v8: Int32 = 0
+
+        subscript(index: Int) -> Int32 {
+            get {
+                switch index {
+                case 0: return v0
+                case 1: return v1
+                case 2: return v2
+                case 3: return v3
+                case 4: return v4
+                case 5: return v5
+                case 6: return v6
+                case 7: return v7
+                default: return v8
+                }
+            }
+            set {
+                switch index {
+                case 0: v0 = newValue
+                case 1: v1 = newValue
+                case 2: v2 = newValue
+                case 3: v3 = newValue
+                case 4: v4 = newValue
+                case 5: v5 = newValue
+                case 6: v6 = newValue
+                case 7: v7 = newValue
+                default: v8 = newValue
+                }
+            }
+        }
     }
 }

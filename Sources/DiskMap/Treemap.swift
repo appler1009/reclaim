@@ -46,6 +46,17 @@ struct TreemapLayout {
         layout.folderFrames = builder.folderFrames
         return layout
     }
+
+    /// Drops the cells before the tree. Cells hold their items `unowned`, so
+    /// the tree has to outlive them, and the tree itself is released off the
+    /// main thread.
+    mutating func detach() {
+        cells.removeAll()
+        folderFrames.removeAll()
+        let held = root
+        root = nil
+        TreeRelease.later(held)
+    }
 }
 
 /// Builds the cell list.

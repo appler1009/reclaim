@@ -12,7 +12,7 @@ struct SpaceProbe {
         LocalSnapshots.list(volume: volume)
     }
     var trashBytes: (String) -> UInt64? = { volume in
-        TrashInspector.contents(forVolumeContaining: URL(fileURLWithPath: volume)).bytes
+        TrashInspector.contents(forVolumeContaining: URL(fileURLWithPath: volume))?.bytes
     }
     var otherVolumes: (String) -> [ContainerVolumes.Volume] = { volume in
         ContainerVolumes.others(forMount: volume)
@@ -150,16 +150,15 @@ struct DiskQueries {
 
     /// Every target with recorded history, most recently scanned first.
     func targets() -> [TargetSummary] {
-        store.targets().compactMap { target in
-            let history = store.snapshots(forTarget: target)
-            guard let newest = history.first else { return nil }
-            return TargetSummary(target: target,
+        store.describedTargets().map { item in
+            let newest = item.snapshot
+            return TargetSummary(target: newest.target,
                                  lastScan: newest.takenAt,
                                  totalBytes: newest.totalBytes,
                                  totalHuman: ByteFormat.string(newest.totalBytes),
                                  fileCount: newest.fileCount,
                                  unreadableCount: newest.unreadableCount,
-                                 scanCount: history.count)
+                                 scanCount: item.count)
         }
     }
 

@@ -783,6 +783,14 @@ private struct Overlay: View {
                     Button("Scan Next") { SessionRestore.shared.scanNext(model) }
                         .buttonStyle(GhostButtonStyle())
                 }
+            case .idle where model.releasedForMemory:
+                VStack(spacing: 14) {
+                    Text("Set aside to free memory.")
+                        .font(.system(size: 13))
+                        .foregroundStyle(.white.opacity(0.8))
+                    Button("Scan Again") { model.rescan() }
+                        .buttonStyle(GhostButtonStyle())
+                }
             case .idle:
                 VStack(spacing: 18) {
                     Spacer(minLength: 0)

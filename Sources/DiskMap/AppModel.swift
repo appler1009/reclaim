@@ -73,6 +73,12 @@ final class AppModel: ObservableObject {
     @Published var hasFullDiskAccess = false
     /// True while a scan is running, including once its first level is on screen.
     @Published var isScanning = false
+    /// When the tree now on screen was finished. The watchlist trusts it for
+    /// the rest of the night and does not walk the same folders again.
+    private(set) var scanFinishedAt: Date?
+    /// The tree was dropped because the system asked for memory back. The
+    /// path is still `scannedURL`, so the tab can scan it again.
+    @Published var releasedForMemory = false
     /// The target this window is waiting its turn to scan, when it was restored
     /// from the last session. Nil the instant the scan starts — a restored tab
     /// spends a moment in the queue, and the window should say so rather than
@@ -261,14 +267,18 @@ final class AppModel: ObservableObject {
                 // the gigabytes back — the stale figure this exists to remove,
                 // arriving late. Only the newest measurement may speak.
                 guard generation == self.trashRefresh else { return }
-                self.trash = contents
+                // Cancelled means "we don't know", so the figure already on
+                // screen stays. A partial walk is not an empty Trash.
+                if let contents { self.trash = contents }
                 if let space { self.apply(space) }
                 // The Trash may only now have come into existence — this app
                 // putting the first thing in it is one of the ways that
                 // happens — so this is the moment to look for it again.
                 self.trashWatcher.rearmIfIdle()
-                Log.debug("trash measured", ["bytes": "\(contents.bytes)",
-                                             "items": "\(contents.items)"])
+                if let contents {
+                    Log.debug("trash measured", ["bytes": "\(contents.bytes)",
+                                                 "items": "\(contents.items)"])
+                }
             }
         }
     }
@@ -345,6 +355,7 @@ final class AppModel: ObservableObject {
     }
 
     func setSelection(_ item: FileItem?) {
+        let item = item?.representsSmallFiles == true ? nil : item
         guard item !== selectedItem else { return }
         selectedItem = item
         notify()
@@ -372,21 +383,32 @@ final class AppModel: ObservableObject {
         // path this window claims overnight and the target its snapshots are
         // filed under are the same string the watchlist holds.
         let url = TargetPath.normalise(url)
+        if let refusal = ScanPaths.refusal(of: url) {
+            Log.info("scan refused", ["path": url.path, "reason": refusal.code])
+            phase = .failed(refusal.message)
+            return
+        }
         session?.cancel()
         let session = ScanSession()
+        session.foldsWhenLarge = true
         self.session = session
         phase = .scanning
+        releasedForMemory = false
+        scanFinishedAt = nil
         // Scanning somewhere else entirely: any folder queued for restoring by a
         // rescan belongs to the previous target and must be dropped.
         if scannedURL != url { pathToRestore = [] }
         queuedTarget = nil
         scannedURL = url
+        hover.set(nil)
+        selectedItem = nil
+        staged = []
+        branches = []
+        let retiring = scanRoot
         scanRoot = nil
         zoomRoot = nil
-        branches = []
-        staged = []
         breakdown = Breakdown()
-        selectedItem = nil
+        TreeRelease.later(retiring)
         readVolumeInfo(for: url)
         // The strip's Trash figure describes the volume being scanned, so the
         // Trash being watched has to be that volume's. Armed here rather than
@@ -411,14 +433,26 @@ final class AppModel: ObservableObject {
         // onto the actor take a weak reference, since by then the work is done
         // and there is nothing left to save.
         DispatchQueue.global(qos: .userInitiated).async { [self] in
-            let root = Scanner.scan(url: url, options: ScanOptions(), session: session) { partial in
+            let permit = ScanGate.shared.acquire(unattended: false) { session.cancel() }
+            defer { permit.release() }
+            if session.isCancelled {
+                DispatchQueue.main.async { [weak self] in
+                    guard let self, self.session === session else { return }
+                    self.stopLiveUpdates()
+                    self.isScanning = false
+                    self.phase = self.scanRoot == nil ? .idle : .ready
+                    self.announceScanEnded()
+                }
+                return
+            }
+            let root = Scanner.scan(url: url, options: .interactive, session: session) { partial in
                 // The first level, milliseconds in: show it and start growing it.
                 DispatchQueue.main.async { [weak self] in
                     guard let self, self.session === session else { return }
                     self.adoptPartial(partial, session: session)
                 }
             }
-            root?.warmTotals()
+            root?.warmTotals(through: 2)
             DispatchQueue.main.async { [weak self] in
                 guard let self, self.session === session else { return }
                 self.stopLiveUpdates()
@@ -440,6 +474,7 @@ final class AppModel: ObservableObject {
                 self.zoomRoot = self.restorePath(from: root)
                 self.branches = []
                 self.isScanning = false
+                self.scanFinishedAt = Date()
                 self.scanCompletion = (0, 0, 0)
                 self.phase = .ready
                 self.refreshBreakdown()
@@ -455,6 +490,7 @@ final class AppModel: ObservableObject {
                     "files": "\(root.fileCount)",
                     "bytes": "\(root.physicalSize)",
                     "unreadableDirs": "\(root.unreadableCount)",
+                    "footprint": "\(ProcessMemory.physFootprint)",
                 ])
             }
         }
@@ -485,14 +521,28 @@ final class AppModel: ObservableObject {
         // children as one of them goes — rare, and a crash when it happens.
         // Only the walk is owed to this actor; what crosses is a value.
         let draft = Snapshot.draft(root: root, target: target, measure: measure)
+        let contained = containedDrafts(root: root, target: target)
         // Shaping and writing history must never hold up the interface.
         DispatchQueue.global(qos: .utility).async { [weak self] in
             let snapshot = Snapshot(draft: draft, measure: measure, volume: volume)
             store.record(snapshot)
+            for extra in contained {
+                _ = UnattendedScan.record(extra, store: store, volume: volume)
+            }
             DispatchQueue.main.async { self?.refreshRecentScans() }
             Log.info("snapshot recorded", ["target": target,
                                            "bytes": "\(snapshot.totalBytes)",
                                            "entries": "\(snapshot.entries.count)"])
+        }
+    }
+
+    /// Watchlist paths inside this scan. Their snapshots come from the tree
+    /// that was just built, so the night does not walk those folders again.
+    private func containedDrafts(root: FileItem, target: String) -> [Snapshot.Draft] {
+        Watchlist.shared.targets.compactMap { path in
+            guard TargetPath.isStrictDescendant(path, of: target),
+                  let node = LiveTabs.find(in: root, path: path) else { return nil }
+            return Snapshot.draft(root: node, target: path, measure: .physical)
         }
     }
 
@@ -735,6 +785,7 @@ final class AppModel: ObservableObject {
 
     /// Selecting a folder implies its contents, so drop anything already covered.
     func toggleStaged(_ node: FileItem) {
+        guard !node.representsSmallFiles else { return }
         defer { notify() }
         if let index = staged.firstIndex(where: { $0 === node }) {
             staged.remove(at: index)
@@ -778,6 +829,11 @@ final class AppModel: ObservableObject {
         var report = DeleteReport()
 
         for node in items {
+            if node.representsSmallFiles {
+                staged.removeAll { $0 === node }
+                if selectedItem === node { selectedItem = nil }
+                continue
+            }
             let bytes = node.size(measure)
             let url = URL(fileURLWithPath: node.path, isDirectory: node.isDirectory)
             do {
@@ -816,6 +872,21 @@ final class AppModel: ObservableObject {
         return report
     }
 
+    func dropTreeForMemoryPressure() {
+        guard let root = scanRoot, !isScanning, staged.isEmpty else { return }
+        hover.set(nil)
+        selectedItem = nil
+        branches = []
+        zoomRoot = nil
+        breakdown = Breakdown()
+        scanRoot = nil
+        releasedForMemory = true
+        phase = .idle
+        TreeRelease.later(root)
+        Log.info("tree released", ["path": scannedURL?.path ?? ""])
+        notify()
+    }
+
     /// Runs the (blocking) file operation off the main thread, so the interface
     /// keeps drawing while a large folder is moved.
     private func moveToTrash(_ url: URL) async throws {
@@ -835,6 +906,14 @@ final class AppModel: ObservableObject {
     // MARK: - Navigation
 
     func zoom(into item: FileItem) {
+        if item.representsSmallFiles, let parent = item.parent {
+            expand(parent, foldingSmallFiles: false)
+            return
+        }
+        if item.isFolded {
+            expand(item)
+            return
+        }
         guard item.isDirectory, !item.children.isEmpty else { return }
         navigatedInwards = true
         zoomRoot = item
@@ -851,6 +930,10 @@ final class AppModel: ObservableObject {
     }
 
     func show(_ node: FileItem) {
+        if node.isFolded {
+            expand(node)
+            return
+        }
         // A folder with no children yet is one this scan has not reached (or was
         // stopped before reaching); entering it would show an empty map.
         if node.isDirectory, node.children.isEmpty, node !== zoomRoot {
@@ -884,6 +967,92 @@ final class AppModel: ObservableObject {
     }
 
     func revealInFinder(_ item: FileItem) {
-        NSWorkspace.shared.activateFileViewerSelecting([URL(fileURLWithPath: item.path)])
+        let target = item.representsSmallFiles ? (item.parent ?? item) : item
+        NSWorkspace.shared.activateFileViewerSelecting([target.url])
+    }
+
+    /// Reads a folded folder from disk and then enters it. The totals it
+    /// already carries stay on the parent if the new read agrees with them.
+    private func expand(_ item: FileItem, foldingSmallFiles: Bool = true) {
+        // This window's scan owns `session`. Replacing it mid-walk throws the
+        // scan's result away when it finishes, and the map stays on whatever
+        // was drawn first.
+        guard !isScanning else { return }
+        let url = item.url
+        let session = ScanSession()
+        session.foldsWhenLarge = true
+        self.session = session
+        isScanning = true
+        var options = ScanOptions.interactive
+        if !foldingSmallFiles { options.smallFileLimit = nil }
+        DispatchQueue.global(qos: .userInitiated).async { [self] in
+            let permit = ScanGate.shared.acquire(unattended: false) { session.cancel() }
+            defer { permit.release() }
+            let scanned = Scanner.scan(url: url, options: options, session: session)
+            DispatchQueue.main.async { [weak self] in
+                guard let self, self.session === session else { return }
+                self.isScanning = false
+                guard let scanned, !session.isCancelled else { return }
+                self.graft(scanned, onto: item)
+                if item.children.isEmpty {
+                    self.zoomRoot = item
+                    self.navigatedInwards = true
+                    self.refreshBreakdown()
+                } else if foldingSmallFiles {
+                    self.zoom(into: item)
+                } else {
+                    self.zoomRoot = item
+                    self.navigatedInwards = true
+                    self.refreshBreakdown()
+                }
+            }
+        }
+    }
+
+    private func graft(_ scanned: FileItem, onto item: FileItem) {
+        let logicalDelta = Int64(scanned.logicalSize) - Int64(item.logicalSize)
+        let physicalDelta = Int64(scanned.physicalSize) - Int64(item.physicalSize)
+        let fileDelta = scanned.fileCount - item.fileCount
+        dropDisplayedCells()
+        let retired = item.children
+        if retired.contains(where: { $0 === selectedItem }) { selectedItem = nil }
+        if let current = hover.item, retired.contains(where: { $0 === current }) { hover.set(nil) }
+        staged.removeAll { node in retired.contains(where: { $0 === node }) }
+        item.children = scanned.children
+        for child in item.children { child.parent = item }
+        item.isFolded = false
+        item.logicalSize = scanned.logicalSize
+        item.physicalSize = scanned.physicalSize
+        item.fileCount = scanned.fileCount
+        item.unreadableCount = scanned.unreadableCount
+        item.invalidateTotals()
+        var node = item.parent
+        while let current = node {
+            current.logicalSize = shifted(current.logicalSize, by: logicalDelta)
+            current.physicalSize = shifted(current.physicalSize, by: physicalDelta)
+            current.fileCount = max(0, current.fileCount + fileDelta)
+            current.invalidateTotals()
+            node = current.parent
+        }
+        treeRevision += 1
+        // The map's next layout runs after this returns. Hold the old children
+        // across that turn so a cell that was not dropped still has its item.
+        DispatchQueue.main.async { withExtendedLifetime(retired) {} }
+    }
+
+    /// Clears the map's cells before `graft` frees the folder they draw.
+    private func dropDisplayedCells() {
+        guard let content = window?.contentView else { return }
+        func walk(_ view: NSView) {
+            if let map = view as? TreemapView { map.dropCells() }
+            for subview in view.subviews { walk(subview) }
+        }
+        walk(content)
+    }
+
+    private func shifted(_ value: UInt64, by delta: Int64) -> UInt64 {
+        if delta >= 0 { return value &+ UInt64(delta) }
+        let cut = UInt64(-delta)
+        return value > cut ? value - cut : 0
     }
 }

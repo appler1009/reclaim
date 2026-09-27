@@ -98,15 +98,27 @@ final class TreemapView: NSView {
     func show(root: FileItem?) {
         let previousLayout = layout
         let previousRoot = self.root
+        let zooming = root != nil && previousRoot != nil
+            && (root?.parent === previousRoot || previousRoot?.parent === root)
+        if !zooming {
+            endTransition()
+        }
         self.root = root
         selected = nil
         hovered = nil
         highlighted = nil
+        if !zooming {
+            var dropped = previousLayout
+            dropped.detach()
+            if previousRoot !== root {
+                TreeRelease.later(previousRoot)
+            }
+        }
         rebuild()
 
         // Anchor the zoom on the tile the move pivots around: the folder being
         // entered (found in the old map) or the one being left (found in the new).
-        guard let root, let previousRoot, root !== previousRoot else { return }
+        guard zooming, let root, let previousRoot, root !== previousRoot else { return }
         if let entered = previousLayout.cells.first(where: { $0.item === root }) {
             start(TreemapTransition(previous: previousLayout, focus: entered.rect, goingIn: true))
         } else if let left = layout.cells.first(where: { $0.item === previousRoot }) {
@@ -131,6 +143,24 @@ final class TreemapView: NSView {
         }
         RunLoop.main.add(timer, forMode: .common)   // keeps running during scrolling
         transitionTimer = timer
+        needsDisplay = true
+    }
+
+    private func endTransition() {
+        transitionTimer?.invalidate()
+        transitionTimer = nil
+        transition = nil
+    }
+
+    /// Drops the cells before their items are replaced. Cells hold items
+    /// `unowned`, so freeing children first would leave the map pointing at
+    /// released nodes until the next layout.
+    func dropCells() {
+        endTransition()
+        layout.cells.removeAll()
+        hovered = nil
+        selected = nil
+        highlighted = nil
         needsDisplay = true
     }
 
@@ -205,7 +235,11 @@ final class TreemapView: NSView {
                                                minimumArea: minimumArea, maximumDepth: 1)
             let elapsed = Double(DispatchTime.now().uptimeNanoseconds - started) / 1e9
             DispatchQueue.main.async {
-                guard let self, self.generation == token else { return }
+                guard let self, self.generation == token else {
+                    var discarded = computed
+                    discarded.detach()
+                    return
+                }
                 self.layout = computed
                 self.expandedStaged = nil
                 self.lastLayoutDuration = elapsed

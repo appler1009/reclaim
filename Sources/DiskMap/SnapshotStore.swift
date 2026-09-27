@@ -16,10 +16,23 @@ struct SnapshotStore {
     }
 
     static var defaultDirectory: URL {
+        if isTestRun {
+            return FileManager.default.temporaryDirectory
+                .appendingPathComponent("reclaim-test-history", isDirectory: true)
+        }
         let base = FileManager.default.urls(for: .applicationSupportDirectory,
                                             in: .userDomainMask).first
             ?? URL(fileURLWithPath: NSTemporaryDirectory())
         return base.appendingPathComponent("Reclaim/History", isDirectory: true)
+    }
+
+    /// `swift test` runs as `swiftpm-testing-helper`. Xcode runs tests inside an
+    /// `.xctest` bundle. The app is neither, so a test that builds a model
+    /// without passing a store cannot write the history folder a person uses.
+    private static var isTestRun: Bool {
+        let name = ProcessInfo.processInfo.processName.lowercased()
+        if name.contains("xctest") || name.contains("testing-helper") { return true }
+        return Bundle.allBundles.contains { $0.bundleURL.path.contains(".xctest") }
     }
 
     /// One file per target, named from the path so it is stable across runs and
@@ -96,20 +109,27 @@ struct SnapshotStore {
         }
     }
 
-    /// Every target with history, newest activity first.
-    func targets() -> [String] {
+    /// Every target with history, newest activity first, decoded once.
+    ///
+    /// `targets()` used to decode each file to learn its name, and the caller
+    /// then decoded it again for the newest snapshot. One read does both.
+    func describedTargets() -> [(snapshot: Snapshot, count: Int)] {
         let files = (try? FileManager.default.contentsOfDirectory(at: directory,
                                                                   includingPropertiesForKeys: nil))
             ?? []
         let decoder = JSONDecoder()
         decoder.dateDecodingStrategy = .iso8601
-        return files.compactMap { url -> (String, Date)? in
+        return files.compactMap { url -> (Snapshot, Int)? in
             guard let data = try? Data(contentsOf: url),
                   let history = try? decoder.decode([Snapshot].self, from: data),
                   let newest = history.max(by: { $0.takenAt < $1.takenAt }) else { return nil }
-            return (newest.target, newest.takenAt)
+            return (newest, history.count)
         }
-        .sorted { $0.1 > $1.1 }
-        .map(\.0)
+        .sorted { $0.0.takenAt > $1.0.takenAt }
+    }
+
+    /// Every target with history, newest activity first.
+    func targets() -> [String] {
+        describedTargets().map(\.snapshot.target)
     }
 }

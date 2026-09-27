@@ -1,3 +1,4 @@
+import AppKit
 import Foundation
 import ReclaimKit
 
@@ -42,6 +43,63 @@ enum LiveTabs {
                 return false
             }
             return TargetPath.normalise(showing) == target
+        }
+    }
+
+    /// A window will rescan a tree that already contains `target`, or it just
+    /// did. The watchlist writes that folder's snapshot from the tree instead
+    /// of walking the disk again.
+    static func willRefreshContainer(of target: String) -> Bool {
+        let target = TargetPath.normalise(target)
+        let began = NightlyRescan.nightBegan(before: Date(), hour: NightlyRescan.hour())
+        return models.contains { model in
+            guard let showing = model.scannedURL?.path,
+                  TargetPath.isStrictDescendant(target, of: showing) else { return false }
+            if model.canRescanUnattended || model.isScanning { return true }
+            if let finished = model.scanFinishedAt, let began, finished >= began { return true }
+            return false
+        }
+    }
+
+    /// A finished tree from tonight that already contains `target`, which the
+    /// watchlist can file without reading the disk. Nil when the tree is from
+    /// a previous night, still being built, or does not contain the path.
+    static func freshDraft(for target: String) -> Snapshot.Draft? {
+        let target = TargetPath.normalise(target)
+        guard let began = NightlyRescan.nightBegan(before: Date(), hour: NightlyRescan.hour()) else {
+            return nil
+        }
+        for model in models {
+            guard !model.isScanning,
+                  let finished = model.scanFinishedAt, finished >= began,
+                  let root = model.scanRoot,
+                  let showing = model.scannedURL?.path,
+                  TargetPath.contains(ancestor: showing, descendant: target),
+                  let node = find(in: root, path: target) else { continue }
+            return Snapshot.draft(root: node, target: target, measure: .physical)
+        }
+        return nil
+    }
+
+    /// Tabs that are open but not in front. The one a person is looking at
+    /// keeps its tree.
+    /// The window a person was looking at. `keyWindow` is nil whenever this
+    /// app is not active, which is when memory pressure and the nightly job
+    /// usually run, so the main window and then the frontmost titled window
+    /// stand in for it.
+    static func frontWindow(key: NSWindow? = NSApp.keyWindow,
+                            main: NSWindow? = NSApp.mainWindow,
+                            ordered: [NSWindow] = NSApp.orderedWindows) -> NSWindow? {
+        if let key { return key }
+        if let main { return main }
+        return ordered.first { $0.styleMask.contains(.titled) }
+    }
+
+    static func dropIdleTrees() {
+        guard let front = frontWindow() else { return }
+        for model in models {
+            guard let window = model.window, window != front else { continue }
+            model.dropTreeForMemoryPressure()
         }
     }
 
