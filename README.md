@@ -172,7 +172,7 @@ Scan totals are byte-exact against `du -sk`.
 ## Tests
 
 ```sh
-swift test        # 302 tests
+swift test        # 295 tests
 ```
 
 They cover the parts that carry the numbers and the parts that are easy to get subtly

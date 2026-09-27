@@ -13,7 +13,6 @@ struct DiskMapApp: App {
         // Also before any scene: the first window's model claims its target as
         // it is built, which is earlier than the delegate is told anything.
         SessionRestore.shared.loadPlan()
-        WindowSizeGuard.discardOversizedSavedFrames()
     }
 
     var body: some Scene {
@@ -246,7 +245,6 @@ private struct NavigationCommands: View {
 }
 
 final class AppDelegate: NSObject, NSApplicationDelegate {
-    private var sizeGuard: WindowSizeGuard?
     /// Lets local agents ask what is on the disk. See MCPServer.
     private let mcp = MCPServer()
     /// Rescans the watchlist overnight. Owned by the app rather than a window,
@@ -272,7 +270,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
         watchlist = WatchlistRescan()
         styleWindows()
-        sizeGuard = WindowSizeGuard(defaultSize: NSSize(width: 1320, height: 860))
     }
 
     /// Translucent title bar blended into the app's own dark chrome.
@@ -296,145 +293,5 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     var mcpURL: String { mcp.url }
 
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool { true }
-}
-
-/// Keeps app windows at a usable size.
-///
-/// On a large external display AppKit repeatedly re-fits windows to the screen
-/// (`_displayChangedSoAdjustWindows:`, confirmed from a stack trace) — at launch
-/// and again whenever the display configuration settles — leaving the UI
-/// stretched across 5120x2880. This watches for resizes the user did not ask for
-/// and puts the window back, while leaving dragging and fullscreen alone.
-///
-/// It deliberately observes *every* window rather than one captured instance:
-/// the window SwiftUI ends up resizing is not always the one that exists when
-/// the app finishes launching.
-final class WindowSizeGuard {
-    private let defaultSize: NSSize
-    private var preferred: [ObjectIdentifier: NSSize] = [:]
-    private var observers: [NSObjectProtocol] = []
-    private var pollTimer: Timer?
-
-    /// A frame saved while the window was screen-sized is restored *at creation*,
-    /// so no resize is ever posted and the guard below never gets a chance. The
-    /// stored frame has to go before the scene is built.
-    static func discardOversizedSavedFrames() {
-        let defaults = UserDefaults.standard
-        let screens = NSScreen.screens.map(\.visibleFrame)
-        guard !screens.isEmpty else { return }
-        for (key, value) in defaults.dictionaryRepresentation()
-        where key.hasPrefix("NSWindow Frame ") {
-            // Format: "x y w h screenX screenY screenW screenH".
-            guard let string = value as? String else { continue }
-            let numbers = string.split(separator: " ").compactMap { Double($0) }
-            guard numbers.count >= 4 else { continue }
-            let size = CGSize(width: numbers[2], height: numbers[3])
-            let oversized = screens.contains { size.width >= $0.width * 0.9 || size.height >= $0.height * 0.9 }
-            if oversized {
-                defaults.removeObject(forKey: key)
-                Log.debug("discarded oversized saved window frame",
-                          ["key": key, "size": "\(Int(size.width))x\(Int(size.height))"])
-            }
-        }
-    }
-
-    /// Whether the *user* put the window in fullscreen, as opposed to macOS
-    /// restoring it there. Without this distinction a window that ended up
-    /// fullscreen once comes back fullscreen forever.
-    private static let fullScreenPreferenceKey = "userPrefersFullScreen"
-    private let launchGraceEnds = Date().addingTimeInterval(3)
-
-    init(defaultSize: NSSize) {
-        self.defaultSize = defaultSize
-        // The window can also be *created* oversized, restored from a saved frame,
-        // in which case no resize is ever posted — so check it a few times while
-        // the scene comes up, not only on notifications.
-        // AppKit re-fits the window at moments that do not reliably post a
-        // notification we can observe, so poll while the app settles.
-        var ticks = 0
-        pollTimer = Timer.scheduledTimer(withTimeInterval: 0.4, repeats: true) { [weak self] timer in
-            guard let self else { timer.invalidate(); return }
-            ticks += 1
-            self.checkMainWindow()
-            if ticks >= 25 { timer.invalidate() }   // ten seconds
-        }
-        let center = NotificationCenter.default
-        observers.append(center.addObserver(forName: NSWindow.didResizeNotification,
-                                            object: nil, queue: .main) { [weak self] note in
-            // Menus, popovers and panels post resizes too. Reacting to those is
-            // what made right-clicking a tile move the window.
-            guard let window = note.object as? NSWindow,
-                  window.styleMask.contains(.titled), window.contentView != nil else { return }
-            self?.check(window)
-        })
-        observers.append(center.addObserver(forName: NSApplication.didChangeScreenParametersNotification,
-                                            object: nil, queue: .main) { [weak self] _ in
-            self?.checkMainWindow()
-        })
-        // Entering fullscreen after launch is a deliberate act; during the launch
-        // grace period it is just macOS restoring the previous session.
-        observers.append(center.addObserver(forName: NSWindow.didEnterFullScreenNotification,
-                                            object: nil, queue: .main) { [weak self] _ in
-            guard let self, Date() > self.launchGraceEnds else { return }
-            UserDefaults.standard.set(true, forKey: Self.fullScreenPreferenceKey)
-        })
-        observers.append(center.addObserver(forName: NSWindow.didExitFullScreenNotification,
-                                            object: nil, queue: .main) { [weak self] _ in
-            guard let self, Date() > self.launchGraceEnds else { return }
-            UserDefaults.standard.set(false, forKey: Self.fullScreenPreferenceKey)
-        })
-        observers.append(center.addObserver(forName: NSWindow.didEndLiveResizeNotification,
-                                            object: nil, queue: .main) { [weak self] note in
-            guard let window = note.object as? NSWindow else { return }
-            // An explicit drag is the new intent.
-            self?.preferred[ObjectIdentifier(window)] = window.frame.size
-        })
-    }
-
-    deinit {
-        pollTimer?.invalidate()
-        observers.forEach { NotificationCenter.default.removeObserver($0) }
-    }
-
-    /// Any resize anywhere in the app, plus display-configuration changes, are
-    /// treated as "check our window" — the notification often comes from another
-    /// window (the menu bar's, for one) in the same layout pass that resized ours.
-    private func checkMainWindow() {
-        guard let window = NSApp.windows.first(where: {
-            $0.styleMask.contains(.titled) && $0.contentView != nil
-        }) else { return }
-        check(window)
-    }
-
-    private func check(_ window: NSWindow) {
-        if window.styleMask.contains(.fullScreen) {
-            // Restored into fullscreen without the user ever asking: leave it.
-            if Date() < launchGraceEnds,
-               !UserDefaults.standard.bool(forKey: Self.fullScreenPreferenceKey) {
-                Log.debug("leaving restored fullscreen")
-                window.toggleFullScreen(nil)
-            }
-            return
-        }
-        guard !window.inLiveResize else { return }
-        // Measured against the screen the window is actually on. Falling back to
-        // NSScreen.main was wrong: that follows the key window, so while a menu
-        // is open it can name a different display, and a window judged against
-        // the wrong screen gets "corrected" for no reason.
-        guard let visible = window.screen?.visibleFrame else { return }
-
-        let key = ObjectIdentifier(window)
-        let preferredSize = preferred[key] ?? defaultSize
-        if let corrected = WindowFit.correction(for: window.frame, in: visible,
-                                                preferred: preferredSize) {
-            Log.debug("restored self-resized window", [
-                "was": "\(Int(window.frame.width))x\(Int(window.frame.height))",
-                "to": "\(Int(corrected.width))x\(Int(corrected.height))",
-            ])
-            window.setFrame(corrected, display: true, animate: false)
-        } else if !WindowFit.isOversized(window.frame.size, on: visible) {
-            preferred[key] = window.frame.size
-        }
-    }
 }
 
