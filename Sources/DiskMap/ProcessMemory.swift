@@ -6,7 +6,14 @@ import Foundation
 /// `ps` leaves out compressed memory, so an idle tree looks small until the
 /// next walk faults it back in. This is the number to put next to a file count.
 enum ProcessMemory {
+    private static var overrideForTesting: UInt64?
+
+    static func setOverrideForTesting(_ bytes: UInt64?) {
+        overrideForTesting = bytes
+    }
+
     static var physFootprint: UInt64 {
+        if let overrideForTesting { return overrideForTesting }
         var info = task_vm_info_data_t()
         var count = mach_msg_type_number_t(MemoryLayout<task_vm_info_data_t>.stride
                                             / MemoryLayout<integer_t>.stride)
@@ -24,4 +31,10 @@ enum ProcessMemory {
 /// every small file. A single open volume is the case this is sized for.
 enum ScanBudget {
     static let byteLimit: UInt64 = 1 << 30
+
+    /// Growth since the walk began, not the process total. An open window
+    /// already holding a tree must not cancel the next walk on the first check.
+    static func grew(from baseline: UInt64, to footprint: UInt64) -> Bool {
+        footprint > baseline && footprint - baseline > byteLimit
+    }
 }

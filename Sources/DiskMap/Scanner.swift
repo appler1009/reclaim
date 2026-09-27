@@ -1,4 +1,5 @@
 import Foundation
+import ReclaimKit
 
 struct ScanProgress {
     var filesScanned: Int
@@ -76,6 +77,8 @@ final class ScanSession: @unchecked Sendable {
     var foldsWhenLarge = false
     private var foldAllFiles = false
     private var budgetChecks = 0
+    /// Footprint when this walk first checked, so later checks measure growth.
+    private var footprintAtStart: UInt64?
 
     /// Whether later files in this scan should be folded even when they are
     /// large. Set from the budget check, read by the directory workers.
@@ -93,8 +96,17 @@ final class ScanSession: @unchecked Sendable {
         let due = budgetChecks % 64 == 0
         let stop = stopsWhenLarge
         let fold = foldsWhenLarge
+        let baseline = footprintAtStart
         lock.unlock()
-        guard due, ProcessMemory.physFootprint > ScanBudget.byteLimit else { return }
+        guard due else { return }
+        let footprint = ProcessMemory.physFootprint
+        guard let baseline else {
+            lock.lock()
+            if footprintAtStart == nil { footprintAtStart = footprint }
+            lock.unlock()
+            return
+        }
+        guard ScanBudget.grew(from: baseline, to: footprint) else { return }
         lock.lock()
         if stop { cancelled = true }
         if fold, !foldAllFiles {
@@ -336,6 +348,7 @@ enum Scanner {
         var smallLogical: UInt64 = 0
         var smallPhysical: UInt64 = 0
         var smallCount = 0
+        var smallFamilies = FamilyTotals()
         let prefix = job.path == "/" ? "/" : job.path + "/"
 
         while let raw = readdir(dir) {
@@ -361,7 +374,8 @@ enum Scanner {
                     guard let summary = summarize(url: URL(fileURLWithPath: fullPath),
                                                   options: options,
                                                   session: session,
-                                                  rootDev: rootDev) else { continue }
+                                                  rootDev: rootDev,
+                                                  links: links) else { continue }
                     let node = FileItem(name: name,
                                         isDirectory: true,
                                         logicalSize: summary.logicalSize,
@@ -369,6 +383,7 @@ enum Scanner {
                                         modified: Date(timeIntervalSince1970: TimeInterval(st.st_mtimespec.tv_sec)),
                                         fileCount: summary.fileCount)
                     node.unreadableCount = summary.unreadableCount
+                    node.adopt(summary.families)
                     node.isFolded = true
                     node.parent = job.node
                     children.append(node)
@@ -399,6 +414,9 @@ enum Scanner {
                     smallLogical += measured.logical
                     smallPhysical += measured.physical
                     smallCount += 1
+                    smallFamilies.add(FamilyTotals(family: family(ofName: name),
+                                                   physical: measured.physical,
+                                                   logical: measured.logical))
                     localFiles += 1
                     localBytes += measured.physical
                     continue
@@ -418,6 +436,7 @@ enum Scanner {
                                   physicalSize: smallPhysical,
                                   fileCount: smallCount)
             bundle.representsSmallFiles = true
+            bundle.adopt(smallFamilies)
             bundle.parent = job.node
             children.append(bundle)
         }
@@ -440,6 +459,7 @@ enum Scanner {
                                 fileCount: child.isDirectory ? child.fileCount : child.fileCount)
             copy.isFolded = child.isFolded
             copy.representsSmallFiles = child.representsSmallFiles
+            if let totals = child.carriedTotals() { copy.adopt(totals) }
             return copy
         }
         let copy = FileItem(name: root.name,
@@ -501,6 +521,13 @@ enum Scanner {
         UInt64(bitPattern: Int64(st.st_dev)) &* 1_000_003 &+ UInt64(st.st_ino)
     }
 
+    private static func family(ofName name: String) -> FileFamily {
+        guard let dot = name.lastIndex(of: "."), dot != name.startIndex else {
+            return FileFamily.of(extension: "")
+        }
+        return FileFamily.of(extension: String(name[name.index(after: dot)...]).lowercased())
+    }
+
     /// Totals and a snapshot's worth of entries, without a node per file.
     ///
     /// The watchlist, `scan_now` and a folded directory only need the numbers.
@@ -509,7 +536,8 @@ enum Scanner {
     static func summarize(url: URL,
                           options: ScanOptions,
                           session: ScanSession,
-                          rootDev givenRoot: dev_t? = nil) -> ScanSummary? {
+                          rootDev givenRoot: dev_t? = nil,
+                          links sharedLinks: LinkLedger? = nil) -> ScanSummary? {
         let path = url.path
         var st = stat()
         guard lstat(path, &st) == 0 else { return nil }
@@ -525,8 +553,8 @@ enum Scanner {
 
         let rootDev = givenRoot ?? st.st_dev
         let skip = Firmlinks.duplicates(underScanRoot: path)
-        let links = LinkLedger(enabled: options.countHardLinksOnce)
-        let collector = SummaryCollector()
+        let links = sharedLinks ?? LinkLedger(enabled: options.countHardLinksOnce)
+        let collector = RankedEntries()
         guard let acc = walk(path: path, depth: 0, rootDev: rootDev, skip: skip,
                              options: options, session: session, links: links,
                              collector: collector) else { return nil }
@@ -537,6 +565,7 @@ enum Scanner {
         summary.unreadableCount = acc.unreadable
         summary.topLevelCount = acc.top
         summary.entries = collector.finish(total: acc.physical)
+        summary.families = acc.families
         return summary
     }
 
@@ -547,7 +576,7 @@ enum Scanner {
                              options: ScanOptions,
                              session: ScanSession,
                              links: LinkLedger,
-                             collector: SummaryCollector) -> SummaryAcc? {
+                             collector: RankedEntries) -> SummaryAcc? {
         if session.isCancelled { return nil }
         session.considerBudget()
         if session.isCancelled { return nil }
@@ -584,6 +613,7 @@ enum Scanner {
                 acc.physical += child.physical
                 acc.files += child.files
                 acc.unreadable += child.unreadable
+                acc.families.add(child.families)
                 collector.add(path: fullPath, bytes: child.physical, isDirectory: true, depth: depth)
             } else {
                 if depth == 0 { acc.top += 1 }
@@ -599,6 +629,11 @@ enum Scanner {
                 acc.logical += logical
                 acc.physical += physical
                 acc.files += files
+                if files > 0 {
+                    acc.families.add(FamilyTotals(family: family(ofName: name),
+                                                  physical: physical,
+                                                  logical: logical))
+                }
                 collector.add(path: fullPath, bytes: physical, isDirectory: false, depth: depth)
             }
         }
@@ -617,6 +652,7 @@ struct ScanSummary {
     /// Immediate children of the root, which is what the Trash figure counts.
     var topLevelCount: Int = 0
     var entries: [Snapshot.Entry] = []
+    var families = FamilyTotals()
 }
 
 private struct SummaryAcc {
@@ -625,47 +661,101 @@ private struct SummaryAcc {
     var files: Int = 0
     var unreadable: Int = 0
     var top: Int = 0
+    var families = FamilyTotals()
 
     init() {}
     init(unreadable: Int) { self.unreadable = unreadable }
 }
 
-private final class SummaryCollector {
+/// Snapshot candidates kept while a summary walk runs.
+///
+/// Shallow entries are capped by sorting when they overflow. Deep entries sit
+/// in a min-heap so replacing the smallest is logarithmic: a linear scan of
+/// the full list, once per file, was the expensive part of a large fold.
+final class RankedEntries {
     private struct Candidate {
         var entry: Snapshot.Entry
-        var depth: Int
+    }
+
+    private struct MinHeap {
+        private var items: [Candidate] = []
+        var count: Int { items.count }
+        var minimumBytes: UInt64 { items[0].entry.bytes }
+        var entries: [Snapshot.Entry] { items.map(\.entry) }
+
+        mutating func insert(_ item: Candidate) {
+            items.append(item)
+            siftUp(items.count - 1)
+        }
+
+        mutating func replaceMinimum(with item: Candidate) {
+            items[0] = item
+            siftDown(0)
+        }
+
+        private mutating func siftUp(_ start: Int) {
+            var index = start
+            while index > 0 {
+                let parent = (index - 1) / 2
+                if items[parent].entry.bytes <= items[index].entry.bytes { break }
+                items.swapAt(parent, index)
+                index = parent
+            }
+        }
+
+        private mutating func siftDown(_ start: Int) {
+            var index = start
+            while true {
+                let left = index * 2 + 1
+                let right = left + 1
+                var smallest = index
+                if left < items.count, items[left].entry.bytes < items[smallest].entry.bytes {
+                    smallest = left
+                }
+                if right < items.count, items[right].entry.bytes < items[smallest].entry.bytes {
+                    smallest = right
+                }
+                if smallest == index { return }
+                items.swapAt(index, smallest)
+                index = smallest
+            }
+        }
     }
 
     private var shallow: [Candidate] = []
-    private var deep: [Candidate] = []
+    private var deep = MinHeap()
+    private let deepLimit: Int
+
+    init(deepLimit: Int = 8_000) {
+        self.deepLimit = deepLimit
+    }
 
     func add(path: String, bytes: UInt64, isDirectory: Bool, depth: Int) {
         guard bytes > 0 else { return }
-        let candidate = Candidate(entry: Snapshot.Entry(path: path, bytes: bytes, isDirectory: isDirectory),
-                                  depth: depth)
+        let candidate = Candidate(entry: Snapshot.Entry(path: path, bytes: bytes, isDirectory: isDirectory))
         if depth < Snapshot.alwaysKeepDepth {
             shallow.append(candidate)
             if shallow.count > 16_000 {
                 shallow.sort { $0.entry.bytes > $1.entry.bytes }
                 shallow.removeLast(shallow.count - 8_000)
             }
-        } else if deep.count < 8_000 {
-            deep.append(candidate)
-        } else if let smallest = deep.min(by: { $0.entry.bytes < $1.entry.bytes }),
-                  bytes > smallest.entry.bytes,
-                  let index = deep.firstIndex(where: { $0.entry.bytes == smallest.entry.bytes }) {
-            deep[index] = candidate
+            return
+        }
+        if deep.count < deepLimit {
+            deep.insert(candidate)
+        } else if bytes > deep.minimumBytes {
+            deep.replaceMinimum(with: candidate)
         }
     }
 
     func finish(total: UInt64) -> [Snapshot.Entry] {
         let threshold = UInt64(Double(total) * Snapshot.significantFraction)
-        return shallow.map(\.entry) + deep.filter { $0.entry.bytes >= threshold }.map(\.entry)
+        return shallow.map(\.entry) + deep.entries.filter { $0.bytes >= threshold }
     }
 }
 
 /// Hard-link keys seen so far in one walk. The first link keeps its size.
-private final class LinkLedger: @unchecked Sendable {
+final class LinkLedger: @unchecked Sendable {
     private let lock = NSLock()
     private var seen = Set<UInt64>()
     private let enabled: Bool

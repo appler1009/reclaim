@@ -152,6 +152,18 @@ final class TreemapView: NSView {
         transition = nil
     }
 
+    /// Drops the cells before their items are replaced. Cells hold items
+    /// `unowned`, so freeing children first would leave the map pointing at
+    /// released nodes until the next layout.
+    func dropCells() {
+        endTransition()
+        layout.cells.removeAll()
+        hovered = nil
+        selected = nil
+        highlighted = nil
+        needsDisplay = true
+    }
+
     /// Re-lays out the folder in view without treating it as navigation, for
     /// when its contents changed underneath us.
     func reload() {

@@ -12,7 +12,7 @@ struct SpaceProbe {
         LocalSnapshots.list(volume: volume)
     }
     var trashBytes: (String) -> UInt64? = { volume in
-        TrashInspector.contents(forVolumeContaining: URL(fileURLWithPath: volume)).bytes
+        TrashInspector.contents(forVolumeContaining: URL(fileURLWithPath: volume))?.bytes
     }
     var otherVolumes: (String) -> [ContainerVolumes.Volume] = { volume in
         ContainerVolumes.others(forMount: volume)

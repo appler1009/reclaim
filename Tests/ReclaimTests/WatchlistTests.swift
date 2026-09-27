@@ -166,8 +166,10 @@ struct WatchlistRescanTests {
         let announced = await withCheckedContinuation { continuation in
             token.value = NotificationCenter.default.addObserver(
                 forName: .reclaimHistoryChanged, object: nil, queue: .main) { note in
+                    let target = note.userInfo?["target"] as? String
+                    guard target == scanned.path else { return }
                     if let observer = token.value { NotificationCenter.default.removeObserver(observer) }
-                    continuation.resume(returning: note.userInfo?["target"] as? String)
+                    continuation.resume(returning: target)
                 }
             UnattendedScan.run(path: scanned.path,
                                store: SnapshotStore(directory: directory.appendingPathComponent("h")))

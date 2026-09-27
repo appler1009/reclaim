@@ -104,6 +104,7 @@ struct Snapshot: Codable, Identifiable {
         var stack: [(node: FileItem, path: String, depth: Int)] = [(root, prefix, 0)]
         while let (node, path, depth) = stack.popLast() {
             for child in node.children {
+                if child.representsSmallFiles { continue }
                 let bytes = child.size(measure)
                 guard bytes > 0 else { continue }
                 let worthKeeping = depth < Self.alwaysKeepDepth || bytes >= threshold

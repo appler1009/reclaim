@@ -207,6 +207,14 @@ final class FileItem {
         familyTotals = nil
     }
 
+    /// Installs totals a walk already computed, for a folded folder or the
+    /// small-files row, neither of which has children to sum.
+    func adopt(_ totals: FamilyTotals) {
+        familyTotals = totals
+    }
+
+    func carriedTotals() -> FamilyTotals? { familyTotals }
+
     /// Caches roll-ups for this node and `depth` levels under it.
     ///
     /// The folder a scan lands on, and the ones a single click away, are the
@@ -233,6 +241,7 @@ final class FileItem {
     /// The kind of file this folder mostly holds, by bytes — the map colours a
     /// folder tile by its contents rather than painting every folder the same grey.
     func dominantFamily(_ measure: SizeMeasure) -> FileFamily {
+        if representsSmallFiles { return totals().dominant(measure) }
         guard isDirectory else { return family }
         return totals().dominant(measure)
     }
