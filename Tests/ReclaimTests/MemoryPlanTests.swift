@@ -1,3 +1,4 @@
+import AppKit
 import Foundation
 import Testing
 @testable import DiskMap
@@ -165,5 +166,116 @@ struct NightWindowTests {
 struct HistoryIsolationTests {
     @Test func theDefaultStoreInATestIsTemporary() {
         #expect(SnapshotStore.defaultDirectory.path.contains("reclaim-test-history"))
+    }
+}
+
+@Suite("Review fixes")
+struct ReviewFixTests {
+    @Test func aHardLinkInsideAFoldIsCountedOnce() throws {
+        let fixture = try Fixture()
+        defer { fixture.cleanUp() }
+        let original = try fixture.file("keep.bin", bytes: 40_000)
+        try fixture.hardLink("node_modules/pkg/link.bin", to: original)
+
+        var foldedOptions = ScanOptions()
+        foldedOptions.foldNames = ["node_modules"]
+        let folded = try #require(Scanner.scan(url: fixture.root, options: foldedOptions,
+                                               session: ScanSession()))
+        let full = try #require(Scanner.scan(url: fixture.root, options: ScanOptions(),
+                                             session: ScanSession()))
+        #expect(folded.physicalSize == full.physicalSize)
+        #expect(folded.fileCount == full.fileCount)
+    }
+
+    @Test func foldedAndSmallFilesKeepTheTypeBreakdown() throws {
+        let fixture = try Fixture()
+        defer { fixture.cleanUp() }
+        try fixture.file("src/main.swift", bytes: 400)
+        try fixture.file("photo.png", bytes: 800)
+        try fixture.file("node_modules/pkg/index.js", bytes: 1_200)
+
+        let folded = try #require(Scanner.scan(url: fixture.root, options: .interactive,
+                                               session: ScanSession()))
+        let full = try #require(Scanner.scan(url: fixture.root, options: ScanOptions(),
+                                             session: ScanSession()))
+        #expect(folded.totals().bytes(.physical) == full.totals().bytes(.physical))
+        #expect(folded.totals().counts == full.totals().counts)
+
+        let snapshot = Snapshot(root: folded, target: fixture.root.path, measure: .physical)
+        #expect(snapshot.entries.allSatisfy { !$0.path.contains("small file") })
+    }
+
+    @Test func deepEntriesKeepTheLargestWhenTheListIsFull() {
+        let ranked = RankedEntries(deepLimit: 2)
+        ranked.add(path: "/a", bytes: 10, isDirectory: false, depth: 3)
+        ranked.add(path: "/b", bytes: 50, isDirectory: false, depth: 3)
+        ranked.add(path: "/c", bytes: 30, isDirectory: false, depth: 3)
+        ranked.add(path: "/d", bytes: 5, isDirectory: false, depth: 3)
+        let kept = Set(ranked.finish(total: 1_000).map(\.path))
+        #expect(kept == ["/b", "/c"])
+    }
+
+    @Test func aCancelledTrashMeasurementIsNotASize() {
+        let session = ScanSession()
+        session.cancel()
+        let contents = TrashInspector.contents(forVolumeContaining: URL(fileURLWithPath: "/"),
+                                               session: session)
+        #expect(contents == nil)
+    }
+
+    @Test func growthIsMeasuredFromTheWalkNotTheProcess() {
+        defer { ProcessMemory.setOverrideForTesting(nil) }
+        let session = ScanSession()
+        session.stopsWhenLarge = true
+        ProcessMemory.setOverrideForTesting(5 << 30)
+        for _ in 0 ..< 64 { session.considerBudget() }
+        #expect(!session.isCancelled)
+        ProcessMemory.setOverrideForTesting((5 << 30) + ScanBudget.byteLimit + 1)
+        for _ in 0 ..< 64 { session.considerBudget() }
+        #expect(session.isCancelled)
+    }
+
+    @MainActor
+    @Test func aFoldIsNotOpenedWhileTheWindowIsScanning() throws {
+        let fixture = try Fixture()
+        defer { fixture.cleanUp() }
+        try fixture.file("node_modules/pkg/index.js", bytes: 1_000)
+        var options = ScanOptions()
+        options.foldNames = ["node_modules"]
+        let root = try #require(Scanner.scan(url: fixture.root, options: options, session: ScanSession()))
+        let modules = try #require(root.children.first { $0.name == "node_modules" })
+        let model = AppModel()
+        model.isScanning = true
+        model.zoom(into: modules)
+        #expect(modules.isFolded)
+        #expect(modules.children.isEmpty)
+    }
+
+    @MainActor
+    @Test func theSmallFilesRowCannotStaySelected() throws {
+        let fixture = try Fixture()
+        defer { fixture.cleanUp() }
+        try fixture.file("tiny.bin", bytes: 100)
+        var options = ScanOptions()
+        options.smallFileLimit = 64 * 1024
+        let root = try #require(Scanner.scan(url: fixture.root, options: options, session: ScanSession()))
+        let bundle = try #require(root.children.first { $0.representsSmallFiles })
+        let model = AppModel()
+        model.setSelection(bundle)
+        #expect(model.selectedItem == nil)
+        model.toggleStaged(bundle)
+        #expect(!model.isStaged(bundle))
+    }
+
+    @MainActor
+    @Test func anInactiveAppKeepsTheMainWindow() {
+        let style: NSWindow.StyleMask = [.titled, .closable, .resizable]
+        let frame = NSRect(x: 0, y: 0, width: 200, height: 200)
+        let main = NSWindow(contentRect: frame, styleMask: style, backing: .buffered, defer: false)
+        let other = NSWindow(contentRect: frame, styleMask: style, backing: .buffered, defer: false)
+        let front = LiveTabs.frontWindow(key: nil, main: main, ordered: [other, main])
+        #expect(front === main)
+        let ordered = LiveTabs.frontWindow(key: nil, main: nil, ordered: [other, main])
+        #expect(ordered === other)
     }
 }

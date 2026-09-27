@@ -267,14 +267,18 @@ final class AppModel: ObservableObject {
                 // the gigabytes back — the stale figure this exists to remove,
                 // arriving late. Only the newest measurement may speak.
                 guard generation == self.trashRefresh else { return }
-                self.trash = contents
+                // Cancelled means "we don't know", so the figure already on
+                // screen stays. A partial walk is not an empty Trash.
+                if let contents { self.trash = contents }
                 if let space { self.apply(space) }
                 // The Trash may only now have come into existence — this app
                 // putting the first thing in it is one of the ways that
                 // happens — so this is the moment to look for it again.
                 self.trashWatcher.rearmIfIdle()
-                Log.debug("trash measured", ["bytes": "\(contents.bytes)",
-                                             "items": "\(contents.items)"])
+                if let contents {
+                    Log.debug("trash measured", ["bytes": "\(contents.bytes)",
+                                                 "items": "\(contents.items)"])
+                }
             }
         }
     }
@@ -351,6 +355,7 @@ final class AppModel: ObservableObject {
     }
 
     func setSelection(_ item: FileItem?) {
+        let item = item?.representsSmallFiles == true ? nil : item
         guard item !== selectedItem else { return }
         selectedItem = item
         notify()
@@ -780,6 +785,7 @@ final class AppModel: ObservableObject {
 
     /// Selecting a folder implies its contents, so drop anything already covered.
     func toggleStaged(_ node: FileItem) {
+        guard !node.representsSmallFiles else { return }
         defer { notify() }
         if let index = staged.firstIndex(where: { $0 === node }) {
             staged.remove(at: index)
@@ -823,7 +829,11 @@ final class AppModel: ObservableObject {
         var report = DeleteReport()
 
         for node in items {
-            if node.representsSmallFiles { continue }
+            if node.representsSmallFiles {
+                staged.removeAll { $0 === node }
+                if selectedItem === node { selectedItem = nil }
+                continue
+            }
             let bytes = node.size(measure)
             let url = URL(fileURLWithPath: node.path, isDirectory: node.isDirectory)
             do {
@@ -964,6 +974,10 @@ final class AppModel: ObservableObject {
     /// Reads a folded folder from disk and then enters it. The totals it
     /// already carries stay on the parent if the new read agrees with them.
     private func expand(_ item: FileItem, foldingSmallFiles: Bool = true) {
+        // This window's scan owns `session`. Replacing it mid-walk throws the
+        // scan's result away when it finishes, and the map stays on whatever
+        // was drawn first.
+        guard !isScanning else { return }
         let url = item.url
         let session = ScanSession()
         session.foldsWhenLarge = true
@@ -999,6 +1013,11 @@ final class AppModel: ObservableObject {
         let logicalDelta = Int64(scanned.logicalSize) - Int64(item.logicalSize)
         let physicalDelta = Int64(scanned.physicalSize) - Int64(item.physicalSize)
         let fileDelta = scanned.fileCount - item.fileCount
+        dropDisplayedCells()
+        let retired = item.children
+        if retired.contains(where: { $0 === selectedItem }) { selectedItem = nil }
+        if let current = hover.item, retired.contains(where: { $0 === current }) { hover.set(nil) }
+        staged.removeAll { node in retired.contains(where: { $0 === node }) }
         item.children = scanned.children
         for child in item.children { child.parent = item }
         item.isFolded = false
@@ -1015,6 +1034,20 @@ final class AppModel: ObservableObject {
             current.invalidateTotals()
             node = current.parent
         }
+        treeRevision += 1
+        // The map's next layout runs after this returns. Hold the old children
+        // across that turn so a cell that was not dropped still has its item.
+        DispatchQueue.main.async { withExtendedLifetime(retired) {} }
+    }
+
+    /// Clears the map's cells before `graft` frees the folder they draw.
+    private func dropDisplayedCells() {
+        guard let content = window?.contentView else { return }
+        func walk(_ view: NSView) {
+            if let map = view as? TreemapView { map.dropCells() }
+            for subview in view.subviews { walk(subview) }
+        }
+        walk(content)
     }
 
     private func shifted(_ value: UInt64, by delta: Int64) -> UInt64 {

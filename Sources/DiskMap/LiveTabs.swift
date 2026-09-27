@@ -83,8 +83,20 @@ enum LiveTabs {
 
     /// Tabs that are open but not in front. The one a person is looking at
     /// keeps its tree.
+    /// The window a person was looking at. `keyWindow` is nil whenever this
+    /// app is not active, which is when memory pressure and the nightly job
+    /// usually run, so the main window and then the frontmost titled window
+    /// stand in for it.
+    static func frontWindow(key: NSWindow? = NSApp.keyWindow,
+                            main: NSWindow? = NSApp.mainWindow,
+                            ordered: [NSWindow] = NSApp.orderedWindows) -> NSWindow? {
+        if let key { return key }
+        if let main { return main }
+        return ordered.first { $0.styleMask.contains(.titled) }
+    }
+
     static func dropIdleTrees() {
-        let front = NSApp.keyWindow
+        guard let front = frontWindow() else { return }
         for model in models {
             guard let window = model.window, window != front else { continue }
             model.dropTreeForMemoryPressure()

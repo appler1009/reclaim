@@ -27,25 +27,29 @@ enum TrashInspector {
     /// Totals only: the Trash is never drawn, so there is no tree to keep.
     /// Waits for whatever walk is already running rather than starting a
     /// second one beside it.
-    static func contents(forVolumeContaining url: URL) -> Contents {
+    static func contents(forVolumeContaining url: URL,
+                         session: ScanSession = ScanSession()) -> Contents? {
         let volume = volumeRoot(containing: url)
-        let session = ScanSession()
         session.stopsWhenLarge = true
         let permit = ScanGate.shared.acquire(unattended: true) { session.cancel() }
         defer { permit.release() }
+        guard !session.isCancelled else { return nil }
         var contents = Contents()
-        guard !session.isCancelled else { return contents }
         for trash in trashURLs(forVolumeAt: volume) {
             var isDirectory: ObjCBool = false
             guard FileManager.default.fileExists(atPath: trash.path, isDirectory: &isDirectory),
                   isDirectory.boolValue else { continue }
             guard let summary = Scanner.summarize(url: trash,
                                                   options: ScanOptions(),
-                                                  session: session) else { continue }
+                                                  session: session) else {
+                if session.isCancelled { return nil }
+                continue
+            }
             contents.bytes += summary.physicalSize
             contents.items += summary.topLevelCount
+            if session.isCancelled { return nil }
         }
-        return contents
+        return session.isCancelled ? nil : contents
     }
 
     /// The mount point of the volume `url` sits on.
