@@ -97,7 +97,7 @@ struct Snapshot: Codable, Identifiable {
         let threshold = UInt64(Double(totalBytes) * Self.significantFraction)
         // The root's name is an absolute path, and everything below is a
         // component appended to it — the same rule `FileItem.path` follows.
-        var prefix = root.name
+        var prefix = target
         if prefix.hasSuffix("/") { prefix.removeLast() }
 
         var collected: [Entry] = []
@@ -137,6 +137,7 @@ struct Snapshot: Codable, Identifiable {
         // Largest first, then capped: what is dropped is what matters least.
         self.entries = Array(draft.collected.sorted { $0.bytes > $1.bytes }
             .prefix(Self.maximumEntries))
+        self.lookup = Self.index(self.entries)
     }
 
     /// Both halves at once, for a caller with no interface to hold up.
@@ -152,11 +153,46 @@ struct Snapshot: Codable, Identifiable {
         return lookup[path]
     }
 
-    private var lookup: [String: UInt64] {
+    /// Built once. The sidebar asks for a path per visible row, per update,
+    /// and rebuilding the map each time showed up as soon as history was on.
+    private let lookup: [String: UInt64]
+
+    private static func index(_ entries: [Entry]) -> [String: UInt64] {
         var map: [String: UInt64] = [:]
         map.reserveCapacity(entries.count)
         for entry in entries { map[entry.path] = entry.bytes }
         return map
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case id, target, takenAt, totalBytes, fileCount, unreadableCount, entries, volume, measure
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        id = try container.decode(UUID.self, forKey: .id)
+        target = try container.decode(String.self, forKey: .target)
+        takenAt = try container.decode(Date.self, forKey: .takenAt)
+        totalBytes = try container.decode(UInt64.self, forKey: .totalBytes)
+        fileCount = try container.decode(Int.self, forKey: .fileCount)
+        unreadableCount = try container.decode(Int.self, forKey: .unreadableCount)
+        entries = try container.decode([Entry].self, forKey: .entries)
+        volume = try container.decodeIfPresent(VolumeSpace.self, forKey: .volume)
+        measure = try container.decodeIfPresent(SizeMeasure.self, forKey: .measure)
+        lookup = Self.index(entries)
+    }
+
+    func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(id, forKey: .id)
+        try container.encode(target, forKey: .target)
+        try container.encode(takenAt, forKey: .takenAt)
+        try container.encode(totalBytes, forKey: .totalBytes)
+        try container.encode(fileCount, forKey: .fileCount)
+        try container.encode(unreadableCount, forKey: .unreadableCount)
+        try container.encode(entries, forKey: .entries)
+        try container.encodeIfPresent(volume, forKey: .volume)
+        try container.encodeIfPresent(measure, forKey: .measure)
     }
 }
 

@@ -24,20 +24,26 @@ enum TrashInspector {
 
     /// Sums the Trash directories for the volume holding `url`.
     ///
-    /// Reuses the ordinary scanner: the Trash is just another directory tree, and
-    /// it is usually small enough that this costs nothing worth optimising.
+    /// Totals only: the Trash is never drawn, so there is no tree to keep.
+    /// Waits for whatever walk is already running rather than starting a
+    /// second one beside it.
     static func contents(forVolumeContaining url: URL) -> Contents {
         let volume = volumeRoot(containing: url)
+        let session = ScanSession()
+        session.stopsWhenLarge = true
+        let permit = ScanGate.shared.acquire(unattended: true) { session.cancel() }
+        defer { permit.release() }
         var contents = Contents()
+        guard !session.isCancelled else { return contents }
         for trash in trashURLs(forVolumeAt: volume) {
             var isDirectory: ObjCBool = false
             guard FileManager.default.fileExists(atPath: trash.path, isDirectory: &isDirectory),
                   isDirectory.boolValue else { continue }
-            guard let root = Scanner.scan(url: trash,
-                                          options: ScanOptions(),
-                                          session: ScanSession()) else { continue }
-            contents.bytes += root.physicalSize
-            contents.items += root.children.count
+            guard let summary = Scanner.summarize(url: trash,
+                                                  options: ScanOptions(),
+                                                  session: session) else { continue }
+            contents.bytes += summary.physicalSize
+            contents.items += summary.topLevelCount
         }
         return contents
     }

@@ -9,6 +9,7 @@ struct DiskMapApp: App {
         CLI.runIfRequested()
         // Before any scene is created, so the model's first logs are not dropped.
         Log.start()
+        MemoryPressure.start()
         // Also before any scene: the first window's model claims its target as
         // it is built, which is earlier than the delegate is told anything.
         SessionRestore.shared.loadPlan()

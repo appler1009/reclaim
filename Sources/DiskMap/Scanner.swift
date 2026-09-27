@@ -12,6 +12,22 @@ struct ScanOptions {
     /// Count a hard-linked file only the first time it is seen.
     var countHardLinksOnce = true
     var includeHidden = true
+    /// Files smaller than this, in a folder that is keeping a tree, become one
+    /// "N small files" entry. Nil keeps every file, which is what tests and the
+    /// command-line scan want.
+    var smallFileLimit: UInt64?
+    /// Directory names whose children are not kept. The folder's totals are,
+    /// and opening it reads the children from disk. `node_modules` and `.git`
+    /// are the ones an interactive scan names.
+    var foldNames: Set<String> = []
+    /// What a window scans: small files and the two directory names that are
+    /// mostly files nobody opens from the map.
+    static var interactive: ScanOptions {
+        var options = ScanOptions()
+        options.smallFileLimit = 64 * 1024
+        options.foldNames = ["node_modules", ".git"]
+        return options
+    }
     /// Directory readers running in parallel.
     ///
     /// One per core, and never fewer than eight. This used to be four per core,
@@ -52,6 +68,43 @@ final class ScanSession: @unchecked Sendable {
     private var branchesCompleted = 0
 
     var onProgress: ((ScanProgress) -> Void)?
+    /// Over `ScanBudget`, cancel instead of finishing. Set on walks that have
+    /// no window waiting for a tree.
+    var stopsWhenLarge = false
+    /// Over `ScanBudget`, stop keeping individual small files. Set on a window's
+    /// scan, which still has to come back with something to draw.
+    var foldsWhenLarge = false
+    private var foldAllFiles = false
+    private var budgetChecks = 0
+
+    /// Whether later files in this scan should be folded even when they are
+    /// large. Set from the budget check, read by the directory workers.
+    var shouldFoldAll: Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        return foldAllFiles
+    }
+
+    /// Samples the footprint every few directories. Cheap next to `lstat`, and
+    /// rare enough that a normal scan never notices it.
+    func considerBudget() {
+        lock.lock()
+        budgetChecks += 1
+        let due = budgetChecks % 64 == 0
+        let stop = stopsWhenLarge
+        let fold = foldsWhenLarge
+        lock.unlock()
+        guard due, ProcessMemory.physFootprint > ScanBudget.byteLimit else { return }
+        lock.lock()
+        if stop { cancelled = true }
+        if fold, !foldAllFiles {
+            foldAllFiles = true
+            lock.unlock()
+            Log.info("scan folding", ["reason": "memory"])
+            return
+        }
+        lock.unlock()
+    }
 
     func prepareBranches(_ count: Int) {
         lock.lock()
@@ -213,6 +266,7 @@ enum Scanner {
                             modified: Date(timeIntervalSince1970: TimeInterval(st.st_mtimespec.tv_sec)),
                             fileCount: 0)
         let skip = Firmlinks.duplicates(underScanRoot: path)
+        let links = LinkLedger(enabled: options.countHardLinksOnce)
         // Read the first level up front, so the caller has something to show and
         // the branch numbering is fixed before any worker starts.
         let topLevel = read(job: .init(node: root, path: path, branch: -1),
@@ -220,6 +274,7 @@ enum Scanner {
                             skip: skip,
                             options: options,
                             session: session,
+                            links: links,
                             assignBranches: true)
         session.prepareBranches(root.children.count)
         if let onTopLevel {
@@ -244,7 +299,8 @@ enum Scanner {
                                               rootDev: st.st_dev,
                                               skip: skip,
                                               options: options,
-                                              session: session)
+                                              session: session,
+                                              links: links)
                     queue.push(subdirectories)
                     queue.complete(branch: job.branch)
                 }
@@ -253,7 +309,7 @@ enum Scanner {
         group.wait()
         if session.isCancelled { return nil }
 
-        aggregate(root: root, options: options)
+        aggregate(root: root)
         return root
     }
 
@@ -264,7 +320,9 @@ enum Scanner {
                              skip: Set<String>,
                              options: ScanOptions,
                              session: ScanSession,
+                             links: LinkLedger,
                              assignBranches: Bool = false) -> [DirectoryQueue.Job] {
+        session.considerBudget()
         guard let dir = opendir(job.path) else {
             job.node.unreadableCount = 1
             return []
@@ -275,6 +333,9 @@ enum Scanner {
         var children: [FileItem] = []
         var localFiles = 0
         var localBytes: UInt64 = 0
+        var smallLogical: UInt64 = 0
+        var smallPhysical: UInt64 = 0
+        var smallCount = 0
         let prefix = job.path == "/" ? "/" : job.path + "/"
 
         while let raw = readdir(dir) {
@@ -296,6 +357,25 @@ enum Scanner {
             if mode == S_IFDIR {
                 if options.stayOnVolume && st.st_dev != rootDev { continue }
                 if skip.contains(fullPath) { continue }
+                if options.foldNames.contains(name) {
+                    guard let summary = summarize(url: URL(fileURLWithPath: fullPath),
+                                                  options: options,
+                                                  session: session,
+                                                  rootDev: rootDev) else { continue }
+                    let node = FileItem(name: name,
+                                        isDirectory: true,
+                                        logicalSize: summary.logicalSize,
+                                        physicalSize: summary.physicalSize,
+                                        modified: Date(timeIntervalSince1970: TimeInterval(st.st_mtimespec.tv_sec)),
+                                        fileCount: summary.fileCount)
+                    node.unreadableCount = summary.unreadableCount
+                    node.isFolded = true
+                    node.parent = job.node
+                    children.append(node)
+                    localFiles += summary.fileCount
+                    localBytes += summary.physicalSize
+                    continue
+                }
                 let node = FileItem(name: name,
                                     isDirectory: true,
                                     modified: Date(timeIntervalSince1970: TimeInterval(st.st_mtimespec.tv_sec)),
@@ -308,15 +388,38 @@ enum Scanner {
                 subdirectories.append(.init(node: node, path: fullPath, branch: branch))
             } else {
                 // Symlinks and special files are counted at their own size, never followed.
-                let node = leaf(name: name, st: st)
-                if mode == S_IFREG && st.st_nlink > 1 {
-                    node.linkKey = UInt64(bitPattern: Int64(st.st_dev)) &* 1_000_003 &+ UInt64(st.st_ino)
+                let measured = sizes(of: st)
+                if mode == S_IFREG, st.st_nlink > 1, !links.count(key(for: st)) {
+                    // Already counted through another link.
+                    continue
                 }
+                let fold = session.shouldFoldAll
+                    || options.smallFileLimit.map { measured.physical < $0 } == true
+                if fold {
+                    smallLogical += measured.logical
+                    smallPhysical += measured.physical
+                    smallCount += 1
+                    localFiles += 1
+                    localBytes += measured.physical
+                    continue
+                }
+                let node = leaf(name: name, st: st)
                 node.parent = job.node
                 children.append(node)
                 localFiles += 1
                 localBytes += node.physicalSize
             }
+        }
+
+        if smallCount > 0 {
+            let bundle = FileItem(name: smallCount == 1 ? "1 small file" : "\(smallCount) small files",
+                                  isDirectory: false,
+                                  logicalSize: smallLogical,
+                                  physicalSize: smallPhysical,
+                                  fileCount: smallCount)
+            bundle.representsSmallFiles = true
+            bundle.parent = job.node
+            children.append(bundle)
         }
 
         // Only this worker touches `job.node.children`, so no lock is needed.
@@ -329,12 +432,15 @@ enum Scanner {
     /// only, with no grandchildren, so nothing the workers touch is shared.
     private static func copyTopLevel(of root: FileItem) -> FileItem {
         let children = root.children.map { child in
-            FileItem(name: child.name,
-                     isDirectory: child.isDirectory,
-                     logicalSize: child.logicalSize,
-                     physicalSize: child.physicalSize,
-                     modified: child.modified,
-                     fileCount: child.isDirectory ? 0 : 1)
+            let copy = FileItem(name: child.name,
+                                isDirectory: child.isDirectory,
+                                logicalSize: child.logicalSize,
+                                physicalSize: child.physicalSize,
+                                modified: child.modified,
+                                fileCount: child.isDirectory ? child.fileCount : child.fileCount)
+            copy.isFolded = child.isFolded
+            copy.representsSmallFiles = child.representsSmallFiles
+            return copy
         }
         let copy = FileItem(name: root.name,
                             isDirectory: true,
@@ -347,21 +453,12 @@ enum Scanner {
     }
 
     /// Iterative post-order sum of sizes, file counts and unreadable directories.
-    private static func aggregate(root: FileItem, options: ScanOptions) {
-        var seenLinks = Set<UInt64>()
+    private static func aggregate(root: FileItem) {
         var stack: [(node: FileItem, visited: Bool)] = [(root, false)]
 
         while let frame = stack.popLast() {
             let node = frame.node
-            if !node.isDirectory {
-                if options.countHardLinksOnce, let key = node.linkKey, !seenLinks.insert(key).inserted {
-                    // Already counted through another link: keep the node, drop its weight.
-                    node.logicalSize = 0
-                    node.physicalSize = 0
-                    node.fileCount = 0
-                }
-                continue
-            }
+            if !node.isDirectory || node.isFolded { continue }
             if frame.visited {
                 var logical: UInt64 = 0
                 var physical: UInt64 = 0
@@ -388,11 +485,199 @@ enum Scanner {
     }
 
     private static func leaf(name: String, st: stat) -> FileItem {
-        FileItem(name: name,
-                 isDirectory: false,
-                 logicalSize: UInt64(max(0, st.st_size)),
-                 physicalSize: UInt64(max(0, st.st_blocks)) * 512,
-                 modified: Date(timeIntervalSince1970: TimeInterval(st.st_mtimespec.tv_sec)))
+        let measured = sizes(of: st)
+        return FileItem(name: name,
+                        isDirectory: false,
+                        logicalSize: measured.logical,
+                        physicalSize: measured.physical,
+                        modified: Date(timeIntervalSince1970: TimeInterval(st.st_mtimespec.tv_sec)))
+    }
+
+    private static func sizes(of st: stat) -> (logical: UInt64, physical: UInt64) {
+        (UInt64(max(0, st.st_size)), UInt64(max(0, st.st_blocks)) * 512)
+    }
+
+    private static func key(for st: stat) -> UInt64 {
+        UInt64(bitPattern: Int64(st.st_dev)) &* 1_000_003 &+ UInt64(st.st_ino)
+    }
+
+    /// Totals and a snapshot's worth of entries, without a node per file.
+    ///
+    /// The watchlist, `scan_now` and a folded directory only need the numbers.
+    /// Memory follows how deep the walk is and how many entries the snapshot
+    /// keeps, which is capped, rather than how many files the folder holds.
+    static func summarize(url: URL,
+                          options: ScanOptions,
+                          session: ScanSession,
+                          rootDev givenRoot: dev_t? = nil) -> ScanSummary? {
+        let path = url.path
+        var st = stat()
+        guard lstat(path, &st) == 0 else { return nil }
+        if (st.st_mode & S_IFMT) != S_IFDIR {
+            let measured = sizes(of: st)
+            return ScanSummary(logicalSize: measured.logical,
+                               physicalSize: measured.physical,
+                               fileCount: 1,
+                               unreadableCount: 0,
+                               topLevelCount: 1,
+                               entries: [])
+        }
+
+        let rootDev = givenRoot ?? st.st_dev
+        let skip = Firmlinks.duplicates(underScanRoot: path)
+        let links = LinkLedger(enabled: options.countHardLinksOnce)
+        let collector = SummaryCollector()
+        guard let acc = walk(path: path, depth: 0, rootDev: rootDev, skip: skip,
+                             options: options, session: session, links: links,
+                             collector: collector) else { return nil }
+        var summary = ScanSummary()
+        summary.logicalSize = acc.logical
+        summary.physicalSize = acc.physical
+        summary.fileCount = acc.files
+        summary.unreadableCount = acc.unreadable
+        summary.topLevelCount = acc.top
+        summary.entries = collector.finish(total: acc.physical)
+        return summary
+    }
+
+    private static func walk(path: String,
+                             depth: Int,
+                             rootDev: dev_t,
+                             skip: Set<String>,
+                             options: ScanOptions,
+                             session: ScanSession,
+                             links: LinkLedger,
+                             collector: SummaryCollector) -> SummaryAcc? {
+        if session.isCancelled { return nil }
+        session.considerBudget()
+        if session.isCancelled { return nil }
+        guard let dir = opendir(path) else { return SummaryAcc(unreadable: 1) }
+        defer { closedir(dir) }
+
+        var acc = SummaryAcc()
+        let prefix = path == "/" ? "" : (path.hasSuffix("/") ? String(path.dropLast()) : path)
+
+        while let raw = readdir(dir) {
+            let entry = raw.pointee
+            var nameBuffer = entry.d_name
+            let name = withUnsafePointer(to: &nameBuffer) { pointer -> String in
+                pointer.withMemoryRebound(to: CChar.self, capacity: Int(entry.d_namlen) + 1) {
+                    String(cString: $0)
+                }
+            }
+            if name == "." || name == ".." { continue }
+            if !options.includeHidden && name.hasPrefix(".") { continue }
+
+            let fullPath = prefix.isEmpty ? "/" + name : prefix + "/" + name
+            var st = stat()
+            guard lstat(fullPath, &st) == 0 else { continue }
+            let mode = st.st_mode & S_IFMT
+
+            if mode == S_IFDIR {
+                if options.stayOnVolume && st.st_dev != rootDev { continue }
+                if skip.contains(fullPath) { continue }
+                if depth == 0 { acc.top += 1 }
+                guard let child = walk(path: fullPath, depth: depth + 1, rootDev: rootDev,
+                                       skip: skip, options: options, session: session,
+                                       links: links, collector: collector) else { return nil }
+                acc.logical += child.logical
+                acc.physical += child.physical
+                acc.files += child.files
+                acc.unreadable += child.unreadable
+                collector.add(path: fullPath, bytes: child.physical, isDirectory: true, depth: depth)
+            } else {
+                if depth == 0 { acc.top += 1 }
+                let measured = sizes(of: st)
+                var logical = measured.logical
+                var physical = measured.physical
+                var files = 1
+                if mode == S_IFREG, st.st_nlink > 1, !links.count(key(for: st)) {
+                    logical = 0
+                    physical = 0
+                    files = 0
+                }
+                acc.logical += logical
+                acc.physical += physical
+                acc.files += files
+                collector.add(path: fullPath, bytes: physical, isDirectory: false, depth: depth)
+            }
+        }
+        return acc
+    }
+}
+
+/// What `Scanner.summarize` keeps. Entries are already filtered the way a
+/// snapshot filters a tree: three levels always, and below that only what is
+/// large against the whole.
+struct ScanSummary {
+    var logicalSize: UInt64 = 0
+    var physicalSize: UInt64 = 0
+    var fileCount: Int = 0
+    var unreadableCount: Int = 0
+    /// Immediate children of the root, which is what the Trash figure counts.
+    var topLevelCount: Int = 0
+    var entries: [Snapshot.Entry] = []
+}
+
+private struct SummaryAcc {
+    var logical: UInt64 = 0
+    var physical: UInt64 = 0
+    var files: Int = 0
+    var unreadable: Int = 0
+    var top: Int = 0
+
+    init() {}
+    init(unreadable: Int) { self.unreadable = unreadable }
+}
+
+private final class SummaryCollector {
+    private struct Candidate {
+        var entry: Snapshot.Entry
+        var depth: Int
+    }
+
+    private var shallow: [Candidate] = []
+    private var deep: [Candidate] = []
+
+    func add(path: String, bytes: UInt64, isDirectory: Bool, depth: Int) {
+        guard bytes > 0 else { return }
+        let candidate = Candidate(entry: Snapshot.Entry(path: path, bytes: bytes, isDirectory: isDirectory),
+                                  depth: depth)
+        if depth < Snapshot.alwaysKeepDepth {
+            shallow.append(candidate)
+            if shallow.count > 16_000 {
+                shallow.sort { $0.entry.bytes > $1.entry.bytes }
+                shallow.removeLast(shallow.count - 8_000)
+            }
+        } else if deep.count < 8_000 {
+            deep.append(candidate)
+        } else if let smallest = deep.min(by: { $0.entry.bytes < $1.entry.bytes }),
+                  bytes > smallest.entry.bytes,
+                  let index = deep.firstIndex(where: { $0.entry.bytes == smallest.entry.bytes }) {
+            deep[index] = candidate
+        }
+    }
+
+    func finish(total: UInt64) -> [Snapshot.Entry] {
+        let threshold = UInt64(Double(total) * Snapshot.significantFraction)
+        return shallow.map(\.entry) + deep.filter { $0.entry.bytes >= threshold }.map(\.entry)
+    }
+}
+
+/// Hard-link keys seen so far in one walk. The first link keeps its size.
+private final class LinkLedger: @unchecked Sendable {
+    private let lock = NSLock()
+    private var seen = Set<UInt64>()
+    private let enabled: Bool
+
+    init(enabled: Bool) { self.enabled = enabled }
+
+    /// True when this key should be counted. A disabled ledger counts everything.
+    func count(_ key: UInt64) -> Bool {
+        guard enabled else { return true }
+        lock.lock()
+        defer { lock.unlock() }
+        return seen.insert(key).inserted
     }
 }
 

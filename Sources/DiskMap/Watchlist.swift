@@ -9,6 +9,23 @@ import Foundation
 enum TargetPath {
     static func normalise(_ url: URL) -> URL { url.standardizedFileURL }
     static func normalise(_ path: String) -> String { normalise(URL(fileURLWithPath: path)).path }
+
+    /// `ancestor` is the scan root and `descendant` is the same folder or one
+    /// inside it. `/` contains every absolute path.
+    static func contains(ancestor: String, descendant: String) -> Bool {
+        let ancestor = normalise(ancestor)
+        let descendant = normalise(descendant)
+        if ancestor == descendant { return true }
+        if ancestor == "/" { return descendant.hasPrefix("/") }
+        return descendant.hasPrefix(ancestor + "/")
+    }
+
+    static func isStrictDescendant(_ descendant: String, of ancestor: String) -> Bool {
+        let ancestor = normalise(ancestor)
+        let descendant = normalise(descendant)
+        guard descendant != ancestor else { return false }
+        return contains(ancestor: ancestor, descendant: descendant)
+    }
 }
 
 /// The targets Reclaim rescans on its own, whether or not a window is showing them.

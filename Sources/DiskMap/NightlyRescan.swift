@@ -67,6 +67,18 @@ final class NightlyRescan {
         return true
     }
 
+    /// The start of the night that `date` belongs to: the most recent `hour`
+    /// o'clock at or before it. A scan finished after that is this night's scan.
+    nonisolated static func nightBegan(before date: Date, hour: Int, calendar: Calendar = .current) -> Date? {
+        var parts = calendar.dateComponents([.year, .month, .day], from: date)
+        parts.hour = hour
+        parts.minute = 0
+        parts.second = 0
+        guard let today = calendar.date(from: parts) else { return nil }
+        if date >= today { return today }
+        return calendar.date(byAdding: .day, value: -1, to: today)
+    }
+
     static func releaseClaims() { claims.removeAll() }
 
     // MARK: - Scheduling

@@ -111,6 +111,13 @@ struct SettingsView: View {
         panel.prompt = "Watch"
         panel.message = "Choose a disk or folder to keep measuring overnight."
         guard panel.runModal() == .OK, let url = panel.url else { return }
+        if let refusal = ScanPaths.refusal(of: url) {
+            let alert = NSAlert()
+            alert.messageText = "That folder isn't watched"
+            alert.informativeText = refusal.message
+            alert.runModal()
+            return
+        }
         watchlist.add(url.path)
     }
 

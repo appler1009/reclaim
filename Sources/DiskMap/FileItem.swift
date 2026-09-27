@@ -12,14 +12,39 @@ final class FileItem {
     var logicalSize: UInt64
     /// Physical size on disk (`st_blocks` * 512), sum of children for directories.
     var physicalSize: UInt64
-    var modified: Date
+    /// Seconds since 1970. A `Date` on every node is a second word the scan
+    /// never needs until a row asks for it; 0 stands in for "unknown".
+    private var modifiedSeconds: UInt32 = 0
+    var modified: Date {
+        get {
+            modifiedSeconds == 0
+                ? .distantPast
+                : Date(timeIntervalSince1970: TimeInterval(modifiedSeconds))
+        }
+        set {
+            let seconds = newValue.timeIntervalSince1970
+            modifiedSeconds = seconds <= 0 ? 0 : UInt32(min(seconds, Double(UInt32.max)))
+        }
+    }
     var children: [FileItem]
     weak var parent: FileItem?
     /// Number of directories that could not be read (permission denied).
-    var unreadableCount: Int = 0
-    var fileCount: Int
-    /// (device, inode) key for hard-link detection; nil unless st_nlink > 1.
-    var linkKey: UInt64?
+    private var unreadableStorage: Int32 = 0
+    var unreadableCount: Int {
+        get { Int(unreadableStorage) }
+        set { unreadableStorage = Int32(clamping: newValue) }
+    }
+    private var fileCountStorage: Int32
+    var fileCount: Int {
+        get { Int(fileCountStorage) }
+        set { fileCountStorage = Int32(clamping: newValue) }
+    }
+    /// Children were not kept. The sizes are the whole subtree; opening the
+    /// folder reads it from disk.
+    var isFolded = false
+    /// Stands in for the files in this folder that were too small to keep.
+    /// It is not a path on disk.
+    var representsSmallFiles = false
 
     init(name: String,
          isDirectory: Bool,
@@ -32,9 +57,9 @@ final class FileItem {
         self.isDirectory = isDirectory
         self.logicalSize = logicalSize
         self.physicalSize = physicalSize
-        self.modified = modified
-        self.fileCount = fileCount
+        self.fileCountStorage = Int32(clamping: fileCount)
         self.children = children
+        self.modified = modified
         for child in children { child.parent = self }
     }
 
@@ -49,11 +74,15 @@ final class FileItem {
     /// enough (tooltips on every visible row) that it showed up as `lstat` in a
     /// profile of navigation.
     var path: String {
+        let origin: FileItem? = representsSmallFiles ? parent : self
+        guard var node = origin else { return "" }
         var components: [String] = []
-        var node: FileItem? = self
-        while let current = node {
-            components.append(current.name)
-            node = current.parent
+        while true {
+            if !node.representsSmallFiles {
+                components.append(node.name)
+            }
+            guard let parent = node.parent else { break }
+            node = parent
         }
         // The root's name is an absolute path; the rest are path components.
         var path = components.removeLast()
@@ -109,8 +138,31 @@ final class FileItem {
     /// done once, during the scan's aggregation pass.
     private var cachedFamily: FileFamily?
 
+    /// One object rather than the struct inline: an optional `FamilyTotals`
+    /// is large enough that storing it in the node would tax every file, and
+    /// most files never have one. Directories that cache a roll-up pay for a
+    /// single box, not three arrays.
+    private final class TotalsBox {
+        var value: FamilyTotals
+        init(_ value: FamilyTotals) { self.value = value }
+    }
+    private var totalsBox: TotalsBox?
+
     /// Rolled-up per-family bytes and counts. Only directories carry one.
-    private(set) var familyTotals: FamilyTotals?
+    private(set) var familyTotals: FamilyTotals? {
+        get { totalsBox?.value }
+        set {
+            if let newValue {
+                if let totalsBox {
+                    totalsBox.value = newValue
+                } else {
+                    totalsBox = TotalsBox(newValue)
+                }
+            } else {
+                totalsBox = nil
+            }
+        }
+    }
 
     var family: FileFamily {
         if let cachedFamily { return cachedFamily }
@@ -121,19 +173,32 @@ final class FileItem {
 
     /// Per-family totals for everything at or below this node.
     ///
-    /// Computed on first use and cached, so a folder is summed at most once no
-    /// matter how often it is revisited, and a parent reuses what its children
-    /// already worked out. Deriving these during the scan instead made scanning
-    /// three times slower for work the user may never look at.
+    /// Cached on this node only. Descendants keep a cache when something asked
+    /// them directly — the folder on screen, the two levels under it after a
+    /// scan — and otherwise are summed and forgotten. Caching every directory
+    /// made the first navigation cheap and left a roll-up on folders nobody
+    /// opened.
     func totals() -> FamilyTotals {
         if let familyTotals { return familyTotals }
-        guard isDirectory else {
-            return FamilyTotals(family: family, physical: physicalSize, logical: logicalSize)
-        }
+        guard isDirectory else { return ownTotals }
         var totals = FamilyTotals()
-        for child in children { totals.add(child.totals()) }
+        for child in children { totals.add(child.summed()) }
         familyTotals = totals
         return totals
+    }
+
+    /// This node's roll-up, reusing a cache a parent already paid for and not
+    /// storing one where there is none.
+    private func summed() -> FamilyTotals {
+        if let familyTotals { return familyTotals }
+        guard isDirectory else { return ownTotals }
+        var totals = FamilyTotals()
+        for child in children { totals.add(child.summed()) }
+        return totals
+    }
+
+    private var ownTotals: FamilyTotals {
+        FamilyTotals(family: family, physical: physicalSize, logical: logicalSize)
     }
 
     /// Drops the cached roll-up. Needed while a scan is running, where a
@@ -142,10 +207,27 @@ final class FileItem {
         familyTotals = nil
     }
 
-    /// Sums this subtree up front, off the main thread, so the first navigation
-    /// after a scan is as cheap as every later one.
-    func warmTotals() {
-        _ = totals()
+    /// Caches roll-ups for this node and `depth` levels under it.
+    ///
+    /// The folder a scan lands on, and the ones a single click away, are the
+    /// ones the sidebar asks about. Deeper folders sum themselves when opened.
+    func warmTotals(through depth: Int = 2) {
+        _ = warm(depth)
+    }
+
+    private func warm(_ depth: Int) -> FamilyTotals {
+        if let familyTotals { return familyTotals }
+        guard isDirectory else { return ownTotals }
+        var totals = FamilyTotals()
+        for child in children {
+            if depth > 0, child.isDirectory {
+                totals.add(child.warm(depth - 1))
+            } else {
+                totals.add(child.summed())
+            }
+        }
+        familyTotals = totals
+        return totals
     }
 
     /// The kind of file this folder mostly holds, by bytes — the map colours a
