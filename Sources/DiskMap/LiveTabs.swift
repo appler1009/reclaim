@@ -81,24 +81,40 @@ enum LiveTabs {
         return nil
     }
 
-    /// Tabs that are open but not in front. The one a person is looking at
-    /// keeps its tree.
-    /// The window a person was looking at. `keyWindow` is nil whenever this
-    /// app is not active, which is when memory pressure and the nightly job
-    /// usually run, so the main window and then the frontmost titled window
-    /// stand in for it.
+    /// The window a person is looking at. The tab in front keeps its tree,
+    /// map included; the others are what memory pressure releases.
+    ///
+    /// `keyWindow` is nil whenever this app is not active, which is when memory
+    /// pressure and the nightly job usually run, so the main window and then
+    /// the frontmost titled window stand in for it. A background tab is still
+    /// a titled window, so it can be the one that ordering names first. The tab
+    /// on screen is the group's selection, and that is the map that stays.
     static func frontWindow(key: NSWindow? = NSApp.keyWindow,
                             main: NSWindow? = NSApp.mainWindow,
                             ordered: [NSWindow] = NSApp.orderedWindows) -> NSWindow? {
-        if let key { return key }
-        if let main { return main }
-        return ordered.first { $0.styleMask.contains(.titled) }
+        let candidate: NSWindow?
+        if let key {
+            candidate = key
+        } else if let main {
+            candidate = main
+        } else {
+            candidate = ordered.first { $0.styleMask.contains(.titled) }
+        }
+        guard let candidate else { return nil }
+        return candidate.tabGroup?.selectedWindow ?? candidate
     }
 
-    static func dropIdleTrees() {
-        guard let front = frontWindow() else { return }
+    /// Drops trees for every open tab except the one on screen.
+    ///
+    /// The arguments exist so a test can pose an inactive app — no key window,
+    /// no main window — without depending on whichever window the runner left
+    /// in front.
+    static func dropIdleTrees(key: NSWindow? = NSApp.keyWindow,
+                              main: NSWindow? = NSApp.mainWindow,
+                              ordered: [NSWindow] = NSApp.orderedWindows) {
+        guard let front = frontWindow(key: key, main: main, ordered: ordered) else { return }
         for model in models {
-            guard let window = model.window, window != front else { continue }
+            guard let window = model.window, window !== front else { continue }
             model.dropTreeForMemoryPressure()
         }
     }

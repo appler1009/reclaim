@@ -278,4 +278,66 @@ struct ReviewFixTests {
         let ordered = LiveTabs.frontWindow(key: nil, main: nil, ordered: [other, main])
         #expect(ordered === other)
     }
+
+    /// Memory pressure runs while the app is inactive, so there is no key
+    /// window. A background tab is still titled, and the window list can name
+    /// it before the tab that is actually on screen. That tab's map has to
+    /// stay; the other tab's tiles are the ones the release is for.
+    @MainActor
+    @Test func memoryPressureKeepsTheVisibleTabsTiles() {
+        let style: NSWindow.StyleMask = [.titled, .closable, .resizable]
+        let frame = NSRect(x: 0, y: 0, width: 240, height: 180)
+        let hidden = NSWindow(contentRect: frame, styleMask: style, backing: .buffered, defer: false)
+        let visible = NSWindow(contentRect: frame, styleMask: style, backing: .buffered, defer: false)
+        hidden.isReleasedWhenClosed = false
+        visible.isReleasedWhenClosed = false
+        defer { hidden.close(); visible.close() }
+
+        hidden.orderFront(nil)
+        hidden.addTabbedWindow(visible, ordered: .above)
+        hidden.tabGroup?.selectedWindow = visible
+        #expect(hidden.tabGroup?.selectedWindow === visible)
+
+        // The background tab is first in z-order. Selection, not that order,
+        // is the window on screen.
+        let front = LiveTabs.frontWindow(key: nil, main: nil, ordered: [hidden, visible])
+        #expect(front === visible)
+
+        let tile = FileItem(name: "Projects", isDirectory: false, physicalSize: 80)
+        let shown = FileItem(name: "/Users/me", isDirectory: true, physicalSize: 80, children: [tile])
+        let parked = FileItem(name: "/tmp/parked", isDirectory: true, physicalSize: 20, children: [
+            FileItem(name: "other", isDirectory: false, physicalSize: 20),
+        ])
+        let visibleModel = AppModel()
+        let hiddenModel = AppModel()
+        visibleModel.window = visible
+        hiddenModel.window = hidden
+        visibleModel.adoptForTesting(root: shown, url: URL(fileURLWithPath: "/Users/me"))
+        hiddenModel.adoptForTesting(root: parked, url: URL(fileURLWithPath: "/tmp/parked"))
+
+        let visibleMap = TreemapView(frame: NSRect(x: 0, y: 0, width: 480, height: 320))
+        let hiddenMap = TreemapView(frame: NSRect(x: 0, y: 0, width: 480, height: 320))
+        visibleMap.show(root: visibleModel.zoomRoot)
+        hiddenMap.show(root: hiddenModel.zoomRoot)
+        #expect(visibleMap.laidOutItemsForTesting.map(\.name) == ["Projects"])
+
+        LiveTabs.dropIdleTrees(key: nil, main: nil, ordered: [hidden, visible])
+
+        // Same update the representable applies when the model publishes.
+        if visibleMap.root !== visibleModel.zoomRoot { visibleMap.show(root: visibleModel.zoomRoot) }
+        if hiddenMap.root !== hiddenModel.zoomRoot { hiddenMap.show(root: hiddenModel.zoomRoot) }
+
+        #expect(visibleModel.phase == .ready)
+        #expect(!visibleModel.releasedForMemory)
+        #expect(visibleModel.zoomRoot === shown)
+        #expect(visibleMap.laidOutItemsForTesting.map(\.name) == ["Projects"])
+        // The list is the same children the tiles are. Keeping the tiles keeps
+        // it; a background tab still drops both.
+        #expect(visibleModel.breakdown.rows.map(\.name) == ["Projects"])
+
+        #expect(hiddenModel.releasedForMemory)
+        #expect(hiddenModel.scanRoot == nil)
+        #expect(hiddenModel.breakdown.rows.isEmpty)
+        #expect(hiddenMap.laidOutItemsForTesting.isEmpty)
+    }
 }
