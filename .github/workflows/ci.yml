@@ -1,10 +1,26 @@
 name: CI
 
+# macOS runners bill at ten times the Linux rate, so this runs as little as it
+# can while still checking every pushed branch:
+# - push only. A pull request's head is a pushed commit, and its checks show on
+#   the PR; also listening to pull_request ran everything twice per push.
+# - nothing for changes to prose alone.
+# - the iOS companion only when something it builds from changed (a Linux job
+#   decides, which costs a tenth of asking a Mac).
 on:
   push:
     branches-ignore: []      # every branch: a broken push should say so early
-  pull_request:
+    paths-ignore:
+      - '**.md'
+      - 'docs/**'
+      - 'LICENSE'
   workflow_dispatch:
+
+# Without this, steps run under `bash -e` and a failing command piped into
+# `tee` passes: a broken build or test run went unnoticed until a later step.
+defaults:
+  run:
+    shell: bash
 
 # A newer push to the same branch makes the older run pointless.
 concurrency:
@@ -12,6 +28,36 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  changes:
+    name: What changed
+    runs-on: ubuntu-latest
+    outputs:
+      companion: ${{ steps.diff.outputs.companion }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+      - id: diff
+        run: |
+          set -euo pipefail
+          before="${{ github.event.before }}"
+          # A new branch has no "before": compare with where it left main.
+          if [ -z "$before" ] || [ "$before" = "0000000000000000000000000000000000000000" ] \
+             || ! git cat-file -e "$before^{commit}" 2>/dev/null; then
+            before=$(git merge-base origin/main HEAD 2>/dev/null || echo "")
+          fi
+          if [ -z "$before" ] || [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            echo "companion=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          changed=$(git diff --name-only "$before" HEAD)
+          echo "$changed"
+          if echo "$changed" | grep -qE '^(iOS/|Sources/ReclaimKit/|Package\.swift|VERSION|\.github/workflows/ci\.yml)'; then
+            echo "companion=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "companion=false" >> "$GITHUB_OUTPUT"
+          fi
+
   test:
     runs-on: macos-15
     steps:
@@ -67,12 +113,15 @@ jobs:
             echo "- signature: $(codesign -dvv dist/Reclaim.app 2>&1 | grep -c Authority) authorities"
           } >> "$GITHUB_STEP_SUMMARY"
 
+      # Only main keeps a download: a branch build is checked, not handed out.
       - name: Package for download
+        if: github.ref == 'refs/heads/main'
         # Zipped with ditto rather than handed to the artifact action directly:
         # a .app is a directory, and uploading it loses the executable bit.
         run: ditto -c -k --keepParent dist/Reclaim.app dist/Reclaim.zip
 
       - uses: actions/upload-artifact@v7
+        if: github.ref == 'refs/heads/main'
         with:
           name: Reclaim-app
           path: dist/Reclaim.zip
@@ -83,6 +132,8 @@ jobs:
     # types can break it from the other side of the repository. Nothing built it
     # until now, which meant that breakage arrived on somebody's phone.
     name: iOS companion
+    needs: changes
+    if: needs.changes.outputs.companion == 'true'
     runs-on: macos-15
     steps:
       - uses: actions/checkout@v7

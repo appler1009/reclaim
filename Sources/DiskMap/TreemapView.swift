@@ -28,7 +28,28 @@ final class TreemapView: NSView {
     weak var delegate: TreemapViewDelegate?
 
     private(set) var root: FileItem?
-    private var layout = TreemapLayout()
+    private var layout = TreemapLayout() {
+        didSet { layoutDidChange() }
+    }
+    /// The district of every cell in `layout`, in order, worked out once per layout.
+    private var districts: [District] = []
+    /// The 3D town, while the map is shown as one.
+    private var city: CitySceneView?
+    private let styleControl = NSSegmentedControl(labels: ["Flat", "3D"], trackingMode: .selectOne,
+                                                  target: nil, action: nil)
+    private let viewpointControl = NSSegmentedControl(labels: CityViewpoint.allCases.map(\.title),
+                                                      trackingMode: .momentary, target: nil, action: nil)
+    /// Where the map style is remembered between launches.
+    static let cityDefaultsKey = "MapIsCity"
+
+    /// Whether the map is drawn as a 3D town (true) or the flat city map.
+    /// The town is laid out in a fixed square, so resizing never rebuilds it.
+    var isCity = false {
+        didSet {
+            guard isCity != oldValue else { return }
+            applyStyle()
+        }
+    }
     private var generation = 0
     /// How long the last layout took, used to decide whether it can be done inline.
     private var lastLayoutDuration: TimeInterval = 0
@@ -65,7 +86,7 @@ final class TreemapView: NSView {
     private var isLiveResizing: Bool { inLiveResize || isResizing }
     /// Nodes the user has picked for the Trash.
     var stagedMarks: Set<ObjectIdentifier> = [] {
-        didSet { expandedStaged = nil; needsDisplay = true }
+        didSet { expandedStaged = nil; needsDisplay = true; syncCityMarks() }
     }
     /// Cache of `stagedMarks` expanded over the current layout's cells.
     private var expandedStaged: Set<ObjectIdentifier>?
@@ -78,11 +99,13 @@ final class TreemapView: NSView {
     override init(frame frameRect: NSRect) {
         super.init(frame: frameRect)
         configureLayer()
+        installControls()
     }
 
     required init?(coder: NSCoder) {
         super.init(coder: coder)
         configureLayer()
+        installControls()
     }
 
     /// Redraw while the view is being resized rather than letting AppKit stretch
@@ -91,14 +114,15 @@ final class TreemapView: NSView {
     private func configureLayer() {
         wantsLayer = true
         layerContentsRedrawPolicy = .duringViewResize
-        layer?.backgroundColor = Theme.background.cgColor
+        layer?.backgroundColor = TreemapRenderer.asphalt
         layer?.isOpaque = true
     }
 
     func show(root: FileItem?) {
         let previousLayout = layout
         let previousRoot = self.root
-        let zooming = root != nil && previousRoot != nil
+        // The town rebuilds rather than zooming; the flat map zooms.
+        let zooming = !isCity && root != nil && previousRoot != nil
             && (root?.parent === previousRoot || previousRoot?.parent === root)
         if !zooming {
             endTransition()
@@ -180,12 +204,15 @@ final class TreemapView: NSView {
     func select(_ item: FileItem?) {
         selected = item
         needsDisplay = true
+        syncCityMarks()
     }
 
     // MARK: - Layout
 
     override func setFrameSize(_ newSize: NSSize) {
         super.setFrameSize(newSize)
+        // The town has its own fixed layout; the scene view just resizes.
+        if isCity, !layout.cells.isEmpty { return }
         if ProcessInfo.processInfo.environment["RECLAIM_TRACE_MAP"] != nil, let window {
             let inWindow = convert(bounds, to: nil)
             Log.debug("map geometry", [
@@ -204,14 +231,15 @@ final class TreemapView: NSView {
     }
 
     private func rebuild() {
-        guard let root, bounds.width > 4, bounds.height > 4 else {
+        let side = CitySceneView.layoutSide
+        let box = isCity ? CGRect(x: 0, y: 0, width: side, height: side) : bounds
+        guard let root, box.width > 4, box.height > 4 else {
             layout = TreemapLayout()
             needsDisplay = true
             return
         }
         generation += 1
         let token = generation
-        let box = bounds
         let measure = self.measure
         let minimumArea: CGFloat = 16
 
@@ -253,6 +281,7 @@ final class TreemapView: NSView {
     /// resizing the sidebar, for one — the highlight would be drawn at the tile's
     /// old rectangle. Re-resolve it against the cells that now exist.
     private func refreshHoverForNewLayout() {
+        guard !isCity else { return }   // the town tracks its own pointer
         guard !isResizing else { hovered = nil; return }
         guard hovered != nil || transition != nil else { return }
         guard let window, window.isKeyWindow else { hovered = nil; return }
@@ -269,9 +298,15 @@ final class TreemapView: NSView {
 
     override func draw(_ dirtyRect: NSRect) {
         guard let context = NSGraphicsContext.current?.cgContext else { return }
+        if isCity {
+            // The scene view covers everything; this is only seen while it loads.
+            context.setFillColor(TreemapRenderer.asphalt)
+            context.fill(dirtyRect)
+            return
+        }
 
         if let transition, !transition.isFinished {
-            context.setFillColor(Theme.background.cgColor)
+            context.setFillColor(TreemapRenderer.asphalt)
             context.fill(bounds)
 
             let outgoing = transition.outgoing(in: bounds)
@@ -287,13 +322,14 @@ final class TreemapView: NSView {
             context.setAlpha(incoming.alpha)
             context.concatenate(incoming.transform)
             TreemapRenderer.draw(layout: layout, in: context, dirty: .infinite,
-                                 measure: measure, staged: stagedNodes, fillBackground: false)
+                                 measure: measure, staged: stagedNodes, districts: districts,
+                                 fillBackground: false)
             context.restoreGState()
             return      // labels and chrome land when the movement settles
         }
 
         TreemapRenderer.draw(layout: layout, in: context, dirty: dirtyRect,
-                             measure: measure, staged: stagedNodes)
+                             measure: measure, staged: stagedNodes, districts: districts)
         // Labels are the expensive part of a redraw and unreadable mid-drag.
         if !isLiveResizing { drawLabels(in: dirtyRect) }
         if !isResizing { drawChrome() }
@@ -312,77 +348,77 @@ final class TreemapView: NSView {
         return expanded
     }
 
+    /// Labels sit on a dark sign in the block's corner, so they read the same
+    /// over a glass tower, a football pitch or a rubbish heap.
     private func drawLabels(in dirtyRect: NSRect) {
         guard let context = NSGraphicsContext.current?.cgContext else { return }
-        for cell in layout.cells
+        let paragraph = NSMutableParagraphStyle()
+        paragraph.lineBreakMode = .byTruncatingMiddle
+        let nameAttributes: [NSAttributedString.Key: Any] = [
+            .font: NSFont.systemFont(ofSize: 11, weight: .semibold),
+            .foregroundColor: NSColor.white.withAlphaComponent(0.95),
+            .paragraphStyle: paragraph,
+        ]
+        let detailAttributes: [NSAttributedString.Key: Any] = [
+            .font: NSFont.monospacedDigitSystemFont(ofSize: 10, weight: .regular),
+            .foregroundColor: NSColor.white.withAlphaComponent(0.75),
+            .paragraphStyle: paragraph,
+        ]
+        let noteAttributes: [NSAttributedString.Key: Any] = [
+            .font: NSFont.systemFont(ofSize: 9.5),
+            .foregroundColor: NSColor.white.withAlphaComponent(0.55),
+            .paragraphStyle: paragraph,
+        ]
+
+        for (index, cell) in layout.cells.enumerated()
         where cell.rect.width > 52 && cell.rect.height > 18 && cell.rect.intersects(dirtyRect) {
-            let paragraph = NSMutableParagraphStyle()
-            paragraph.lineBreakMode = .byTruncatingMiddle
-            // Bright tiles get dark text, so a label never washes out.
-            let tint = TreemapRenderer.tileColor(family: cell.item.dominantFamily(measure),
-                                                 depth: cell.depth,
-                                                 staged: stagedNodes.contains(ObjectIdentifier(cell.item)))
-            let light = TreemapRenderer.isLight(tint)
-            let ink: NSColor = light ? .black : .white
-            // A nil value must be left out of the attributes entirely: passing
-            // `Optional.none as Any` for .shadow makes AppKit throw mid-draw.
-            let shadow: [NSAttributedString.Key: Any] = light ? [:] : [.shadow: labelShadow]
-            let nameAttributes: [NSAttributedString.Key: Any] = [
-                .font: NSFont.systemFont(ofSize: 11, weight: .semibold),
-                .foregroundColor: ink.withAlphaComponent(light ? 0.82 : 0.95),
-                .paragraphStyle: paragraph,
-            ].merging(shadow) { current, _ in current }
             // Clip to the tile: a label must never bleed over its own border,
             // and the text box below is allowed to be taller than what is left.
             context.saveGState()
-            context.clip(to: cell.rect)
             defer { context.restoreGState() }
+            context.clip(to: cell.rect)
 
-            let inset = cell.rect.insetBy(dx: 6, dy: 5)
-            (cell.item.name as NSString).draw(
-                with: CGRect(x: inset.minX, y: inset.minY, width: inset.width, height: 14),
-                options: [.usesLineFragmentOrigin, .truncatesLastVisibleLine],
-                attributes: nameAttributes)
-
+            var lines: [(text: String, attributes: [NSAttributedString.Key: Any], height: CGFloat)] = [
+                (cell.item.name, nameAttributes, 14),
+            ]
             if cell.rect.height > 34 && cell.rect.width > 84 {
-                let detailAttributes: [NSAttributedString.Key: Any] = [
-                    .font: NSFont.monospacedDigitSystemFont(ofSize: 10, weight: .regular),
-                    .foregroundColor: ink.withAlphaComponent(light ? 0.66 : 0.72),
-                    .paragraphStyle: paragraph,
-                ].merging(shadow) { current, _ in current }
                 var detail = ByteFormat.string(cell.item.size(measure))
                 if let total = root?.size(measure), total > 0 {
                     let share = Double(cell.item.size(measure)) / Double(total) * 100
                     detail += String(format: "  ·  %.0f%%", share)
                 }
-                (detail as NSString).draw(
-                    with: CGRect(x: inset.minX, y: inset.minY + 15, width: inset.width, height: 13),
-                    options: [.usesLineFragmentOrigin, .truncatesLastVisibleLine],
-                    attributes: detailAttributes)
+                lines.append((detail, detailAttributes, 13))
 
-                // A folder tile stands for everything inside it; say how much.
-                if cell.item.isDirectory, cell.rect.height > 52, cell.rect.width > 110 {
-                    let countAttributes: [NSAttributedString.Key: Any] = [
-                        .font: NSFont.systemFont(ofSize: 9.5),
-                        .foregroundColor: ink.withAlphaComponent(light ? 0.5 : 0.45),
-                        .paragraphStyle: paragraph,
-                    ].merging(shadow) { current, _ in current }
-                    let files = cell.item.fileCount
-                    ("\(files.formatted()) file\(files == 1 ? "" : "s")" as NSString).draw(
-                        with: CGRect(x: inset.minX, y: inset.minY + 29, width: inset.width, height: 12),
-                        options: [.usesLineFragmentOrigin, .truncatesLastVisibleLine],
-                        attributes: countAttributes)
+                // What the block is, and for a folder how much it stands for.
+                if cell.rect.height > 52, cell.rect.width > 110 {
+                    var note = index < districts.count ? districts[index].label : ""
+                    if cell.item.isDirectory {
+                        let files = cell.item.fileCount
+                        note = "\(files.formatted()) file\(files == 1 ? "" : "s")  ·  " + note
+                    }
+                    lines.append((note, noteAttributes, 12))
                 }
             }
-        }
-    }
 
-    private var labelShadow: NSShadow {
-        let shadow = NSShadow()
-        shadow.shadowColor = NSColor.black.withAlphaComponent(0.65)
-        shadow.shadowBlurRadius = 2
-        shadow.shadowOffset = NSSize(width: 0, height: -1)
-        return shadow
+            let inset = cell.rect.insetBy(dx: 8, dy: 7)
+            let widest = lines.map { ($0.text as NSString).size(withAttributes: $0.attributes).width }
+                .max() ?? 0
+            let sign = CGRect(x: inset.minX - 4, y: inset.minY - 3,
+                              width: min(inset.width, ceil(widest)) + 8,
+                              height: lines.reduce(0) { $0 + $1.height + 1 } + 4)
+            context.setFillColor(NSColor.black.withAlphaComponent(0.62).cgColor)
+            context.addPath(CGPath(roundedRect: sign, cornerWidth: 4, cornerHeight: 4, transform: nil))
+            context.fillPath()
+
+            var y = inset.minY
+            for line in lines {
+                (line.text as NSString).draw(
+                    with: CGRect(x: inset.minX, y: y, width: inset.width, height: line.height),
+                    options: [.usesLineFragmentOrigin, .truncatesLastVisibleLine],
+                    attributes: line.attributes)
+                y += line.height + 1
+            }
+        }
     }
 
     private func drawChrome() {
@@ -414,6 +450,7 @@ final class TreemapView: NSView {
         guard wanted !== highlighted else { return }
         let previous = highlighted.flatMap(frame(of:))
         highlighted = wanted
+        syncCityMarks()
         if let previous { setNeedsDisplay(previous.insetBy(dx: -2, dy: -2)) }
         if let rect = wanted.flatMap(frame(of:)) { setNeedsDisplay(rect.insetBy(dx: -2, dy: -2)) }
     }
@@ -451,7 +488,7 @@ final class TreemapView: NSView {
     }
 
     override func mouseMoved(with event: NSEvent) {
-        guard !isResizing else { return }
+        guard !isResizing, !isCity else { return }
         let point = convert(event.locationInWindow, from: nil)
         let cell = layout.item(at: point)
         guard cell?.item !== hovered?.item else { return }
@@ -467,6 +504,7 @@ final class TreemapView: NSView {
     }
 
     override func mouseExited(with event: NSEvent) {
+        guard !isCity else { return }
         let previous = hovered?.rect
         hovered = nil
         delegate?.treemap(self, didHover: nil)
@@ -504,6 +542,10 @@ final class TreemapView: NSView {
     override func menu(for event: NSEvent) -> NSMenu? {
         let point = convert(event.locationInWindow, from: nil)
         guard let cell = layout.item(at: point) else { return nil }
+        return menu(for: cell)
+    }
+
+    fileprivate func menu(for cell: TreemapCell) -> NSMenu {
         let item = cell.item
         contextItem = item
 
@@ -511,6 +553,7 @@ final class TreemapView: NSView {
         selected = item
         delegate?.treemap(self, didSelect: cell)
         needsDisplay = true
+        syncCityMarks()
 
         let menu = NSMenu()
         menu.autoenablesItems = false
@@ -519,6 +562,19 @@ final class TreemapView: NSView {
                                  action: nil, keyEquivalent: "")
         heading.isEnabled = false
         menu.addItem(heading)
+        // Say what the block is. For the garbage districts this is the map's
+        // hint that it can go; removing it is still the user's decision.
+        if let index = layout.cells.firstIndex(where: { $0.item === item }), index < districts.count {
+            let district = districts[index]
+            let note = NSMenuItem(title: "\(district.label): \(district.hint)", action: nil, keyEquivalent: "")
+            note.isEnabled = false
+            if district.isGarbage {
+                note.attributedTitle = NSAttributedString(
+                    string: note.title + " — usually safe to remove",
+                    attributes: [.foregroundColor: Theme.accent])
+            }
+            menu.addItem(note)
+        }
         menu.addItem(.separator())
 
         if item.isDirectory, !item.children.isEmpty {
@@ -582,5 +638,130 @@ final class TreemapView: NSView {
         if event.clickCount == 2, let item = cell?.item {
             delegate?.treemap(self, didActivate: item)
         }
+    }
+}
+
+// MARK: - City
+
+extension TreemapView: CitySceneViewHost {
+    private func installControls() {
+        styleControl.target = self
+        styleControl.action = #selector(styleChanged)
+        styleControl.controlSize = .small
+        styleControl.segmentStyle = .rounded
+        styleControl.toolTip = "Show the folder as a flat map or a 3D town"
+        viewpointControl.target = self
+        viewpointControl.action = #selector(viewpointChosen)
+        viewpointControl.controlSize = .small
+        viewpointControl.segmentStyle = .rounded
+        viewpointControl.toolTip = "Move the camera. Drag to orbit, scroll or pinch to zoom."
+        for control in [styleControl, viewpointControl] {
+            control.sizeToFit()
+            control.autoresizingMask = [.minXMargin, .maxYMargin]
+            addSubview(control)
+        }
+        layoutControls()
+        applyStyle()
+    }
+
+    private func layoutControls() {
+        let margin: CGFloat = 10
+        styleControl.setFrameOrigin(NSPoint(x: bounds.maxX - styleControl.frame.width - margin, y: margin))
+        viewpointControl.setFrameOrigin(NSPoint(x: styleControl.frame.minX - viewpointControl.frame.width - 8,
+                                                y: margin))
+    }
+
+    @objc private func styleChanged() {
+        isCity = styleControl.selectedSegment == 1
+        UserDefaults.standard.set(isCity, forKey: TreemapView.cityDefaultsKey)
+    }
+
+    @objc private func viewpointChosen() {
+        guard let viewpoint = CityViewpoint(rawValue: viewpointControl.selectedSegment) else { return }
+        city?.place(camera: viewpoint)
+    }
+
+    private func applyStyle() {
+        styleControl.selectedSegment = isCity ? 1 : 0
+        viewpointControl.isHidden = !isCity
+        endTransition()
+        if hovered != nil {
+            hovered = nil
+            delegate?.treemap(self, didHover: nil)
+        }
+        if isCity {
+            if city == nil {
+                let scene = CitySceneView(frame: bounds, options: nil)
+                scene.autoresizingMask = [.width, .height]
+                scene.host = self
+                addSubview(scene, positioned: .below, relativeTo: viewpointControl)
+                city = scene
+            }
+        } else {
+            city?.removeFromSuperview()
+            city = nil
+        }
+        layoutControls()
+        rebuild()
+        needsDisplay = true
+    }
+
+    /// Zones the new layout and hands it to the town.
+    private func layoutDidChange() {
+        districts = layout.zoned(measure)
+        guard let city else { return }
+        guard !layout.cells.isEmpty else { city.clear(); return }
+        let total = root?.size(measure) ?? 0
+        let lots = layout.cells.enumerated().map { index, cell -> CityLot in
+            let bytes = cell.item.size(measure)
+            var detail = ByteFormat.string(bytes)
+            if total > 0 { detail += String(format: "  ·  %.0f%%", Double(bytes) / Double(total) * 100) }
+            return CityLot(index: index, rect: cell.rect, district: districts[index],
+                           family: cell.item.dominantFamily(measure),
+                           seed: CityBlock.seed(cell.item.name), name: cell.item.name, detail: detail)
+        }
+        city.show(lots: lots)
+        syncCityMarks()
+    }
+
+    private func cellIndex(of item: FileItem?) -> Int? {
+        guard let item else { return nil }
+        return layout.cells.firstIndex { $0.item === item }
+    }
+
+    private func syncCityMarks() {
+        guard let city else { return }
+        var marks = CitySceneView.Marks()
+        marks.hovered = cellIndex(of: hovered?.item)
+        marks.selected = cellIndex(of: selected)
+        marks.highlighted = cellIndex(of: highlighted)
+        let staged = stagedNodes
+        if !staged.isEmpty {
+            marks.staged = Set(layout.cells.indices.filter { staged.contains(ObjectIdentifier(layout.cells[$0].item)) })
+        }
+        city.marks = marks
+    }
+
+    func city(_ view: CitySceneView, didHover index: Int?) {
+        let cell = index.flatMap { $0 < layout.cells.count ? layout.cells[$0] : nil }
+        hovered = cell
+        if highlighted === cell?.item { highlighted = nil }
+        delegate?.treemap(self, didHover: cell)
+        syncCityMarks()
+    }
+
+    func city(_ view: CitySceneView, didClick index: Int?, clickCount: Int) {
+        let cell = index.flatMap { $0 < layout.cells.count ? layout.cells[$0] : nil }
+        selected = cell?.item
+        delegate?.treemap(self, didSelect: cell)
+        syncCityMarks()
+        if clickCount == 2, let item = cell?.item, item.isDirectory, !item.children.isEmpty {
+            delegate?.treemap(self, didActivate: item)
+        }
+    }
+
+    func city(_ view: CitySceneView, menuFor index: Int) -> NSMenu? {
+        guard index < layout.cells.count else { return nil }
+        return menu(for: layout.cells[index])
     }
 }

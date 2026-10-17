@@ -9,6 +9,8 @@ struct TreemapRepresentable: NSViewRepresentable {
     func makeNSView(context: Context) -> TreemapView {
         let view = TreemapView()
         view.delegate = context.coordinator
+        // The 3D town is the default; the flat map is a click away and remembered.
+        view.isCity = UserDefaults.standard.object(forKey: TreemapView.cityDefaultsKey) as? Bool ?? true
         context.coordinator.follow(hoverOf: model, in: view)
         return view
     }

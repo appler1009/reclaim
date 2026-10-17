@@ -23,8 +23,25 @@ as a single level of tiles, each sized by the space it takes:
   to come back out; double-click, the list, **Up** and **⌘↑** all work too. Changing
   level zooms: the tile you enter grows into the whole view, and going back up shrinks
   the view into the tile it came from.
+- **It is a town, in 3D.** Each tile is a city block, still sized by the space it takes,
+  and what stands on it says what is in it. Drag to orbit, scroll or pinch to zoom, or
+  jump to the **Top**, **Tilt** or **Street** view; **Flat** switches to a 2D city map.
+  Double-click a block to go into it, right-click for the same menu as the list.
+- **Some forty kinds of district, not one per file type.** The name, the folders above,
+  the size, the file count and the age all count: a Git checkout is a tech campus, a
+  small script folder a startup garage, `.git` the hall of records; documents are a
+  school or a university, music a concert hall, video a film studio, a Photos library a
+  museum, raw camera files an art studio; models are an AI lab, virtual machines an
+  embassy, Docker a container port, iCloud Drive an airport, `/Applications` an
+  industrial park, Steam an amusement park.
+- **Garbage has its own neighbourhoods.** Caches are a landfill, `node_modules` and
+  other dependencies a scrapyard, build output a demolition site, logs a log yard,
+  crash reports a toxic dump, used installers a shantytown, old device support a ghost
+  town, the Trash a recycling depot, temporary files a junkyard. Everything inside such
+  a folder inherits it. It is a hint only — the context menu says why — and nothing is
+  removed until you say so.
 - **Colour says what kind of thing it is** — code, media, images, archives, documents,
-  apps, data. A folder takes the colour of what it mostly holds.
+  apps, data. Roofs carry the colour, and a folder takes the colour of what it mostly holds.
 - **One set of numbers**, in the strip at the top: the size of the folder in view, files
   inside, items here, then — set apart, because they describe something else — free space
   on the volume, what is sitting in the Trash, and how many directories could not be read.
