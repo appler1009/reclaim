@@ -21,3 +21,30 @@ enum Theme {
     static let hairline = NSColor(white: 1, alpha: 0.08)
     static let accent = NSColor(srgbRed: 1.00, green: 0.42, blue: 0.36, alpha: 1)
 }
+
+/// Where a tile stands on the city map.
+extension District {
+    static func of(_ item: FileItem, family: FileFamily, insideReclaimable: Bool) -> District {
+        // The small-files bundle is a stand-in, not a folder with a name of its own.
+        if item.representsSmallFiles { return zoned(family) }
+        return of(name: item.name, isDirectory: item.isDirectory, ext: item.ext,
+                  family: family, insideReclaimable: insideReclaimable)
+    }
+}
+
+extension FileItem {
+    /// Named like something that is rebuilt on demand: a cache, build output, logs.
+    var isReclaimableByName: Bool {
+        !representsSmallFiles && District.isReclaimable(name: name, isDirectory: isDirectory, ext: ext)
+    }
+
+    /// This item, or a folder it sits in, is rebuildable.
+    var isWithinReclaimable: Bool {
+        var node: FileItem? = self
+        while let current = node {
+            if current.isReclaimableByName { return true }
+            node = current.parent
+        }
+        return false
+    }
+}

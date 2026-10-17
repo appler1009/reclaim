@@ -23,8 +23,16 @@ as a single level of tiles, each sized by the space it takes:
   to come back out; double-click, the list, **Up** and **⌘↑** all work too. Changing
   level zooms: the tile you enter grows into the whole view, and going back up shrinks
   the view into the tile it came from.
+- **It is drawn as a town.** Each tile is a city block, still sized by the space it takes,
+  and what stands on it says what is in it: a tech campus of glass towers for code, a
+  school with a running track for documents, a stadium for media, a park for images,
+  warehouses for archives, a factory for apps, a data centre for databases.
+- **Landfill is the hint.** Caches, build output (`node_modules`, `DerivedData`), logs
+  and used installers are drawn as a landfill — everything inside `~/Library/Caches`
+  included — since whatever made them rebuilds them. It is a hint only; nothing is
+  removed until you say so.
 - **Colour says what kind of thing it is** — code, media, images, archives, documents,
-  apps, data. A folder takes the colour of what it mostly holds.
+  apps, data. Roofs carry the colour, and a folder takes the colour of what it mostly holds.
 - **One set of numbers**, in the strip at the top: the size of the folder in view, files
   inside, items here, then — set apart, because they describe something else — free space
   on the volume, what is sitting in the Trash, and how many directories could not be read.

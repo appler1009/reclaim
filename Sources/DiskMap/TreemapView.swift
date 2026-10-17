@@ -91,7 +91,7 @@ final class TreemapView: NSView {
     private func configureLayer() {
         wantsLayer = true
         layerContentsRedrawPolicy = .duringViewResize
-        layer?.backgroundColor = Theme.background.cgColor
+        layer?.backgroundColor = TreemapRenderer.asphalt
         layer?.isOpaque = true
     }
 
@@ -271,7 +271,7 @@ final class TreemapView: NSView {
         guard let context = NSGraphicsContext.current?.cgContext else { return }
 
         if let transition, !transition.isFinished {
-            context.setFillColor(Theme.background.cgColor)
+            context.setFillColor(TreemapRenderer.asphalt)
             context.fill(bounds)
 
             let outgoing = transition.outgoing(in: bounds)
@@ -312,77 +312,79 @@ final class TreemapView: NSView {
         return expanded
     }
 
+    /// Labels sit on a dark sign in the block's corner, so they read the same
+    /// over a glass tower, a football pitch or a rubbish heap.
     private func drawLabels(in dirtyRect: NSRect) {
         guard let context = NSGraphicsContext.current?.cgContext else { return }
+        let rootWithin = root?.isWithinReclaimable ?? false
+        let paragraph = NSMutableParagraphStyle()
+        paragraph.lineBreakMode = .byTruncatingMiddle
+        let nameAttributes: [NSAttributedString.Key: Any] = [
+            .font: NSFont.systemFont(ofSize: 11, weight: .semibold),
+            .foregroundColor: NSColor.white.withAlphaComponent(0.95),
+            .paragraphStyle: paragraph,
+        ]
+        let detailAttributes: [NSAttributedString.Key: Any] = [
+            .font: NSFont.monospacedDigitSystemFont(ofSize: 10, weight: .regular),
+            .foregroundColor: NSColor.white.withAlphaComponent(0.75),
+            .paragraphStyle: paragraph,
+        ]
+        let noteAttributes: [NSAttributedString.Key: Any] = [
+            .font: NSFont.systemFont(ofSize: 9.5),
+            .foregroundColor: NSColor.white.withAlphaComponent(0.55),
+            .paragraphStyle: paragraph,
+        ]
+
         for cell in layout.cells
         where cell.rect.width > 52 && cell.rect.height > 18 && cell.rect.intersects(dirtyRect) {
-            let paragraph = NSMutableParagraphStyle()
-            paragraph.lineBreakMode = .byTruncatingMiddle
-            // Bright tiles get dark text, so a label never washes out.
-            let tint = TreemapRenderer.tileColor(family: cell.item.dominantFamily(measure),
-                                                 depth: cell.depth,
-                                                 staged: stagedNodes.contains(ObjectIdentifier(cell.item)))
-            let light = TreemapRenderer.isLight(tint)
-            let ink: NSColor = light ? .black : .white
-            // A nil value must be left out of the attributes entirely: passing
-            // `Optional.none as Any` for .shadow makes AppKit throw mid-draw.
-            let shadow: [NSAttributedString.Key: Any] = light ? [:] : [.shadow: labelShadow]
-            let nameAttributes: [NSAttributedString.Key: Any] = [
-                .font: NSFont.systemFont(ofSize: 11, weight: .semibold),
-                .foregroundColor: ink.withAlphaComponent(light ? 0.82 : 0.95),
-                .paragraphStyle: paragraph,
-            ].merging(shadow) { current, _ in current }
             // Clip to the tile: a label must never bleed over its own border,
             // and the text box below is allowed to be taller than what is left.
             context.saveGState()
-            context.clip(to: cell.rect)
             defer { context.restoreGState() }
+            context.clip(to: cell.rect)
 
-            let inset = cell.rect.insetBy(dx: 6, dy: 5)
-            (cell.item.name as NSString).draw(
-                with: CGRect(x: inset.minX, y: inset.minY, width: inset.width, height: 14),
-                options: [.usesLineFragmentOrigin, .truncatesLastVisibleLine],
-                attributes: nameAttributes)
-
+            var lines: [(text: String, attributes: [NSAttributedString.Key: Any], height: CGFloat)] = [
+                (cell.item.name, nameAttributes, 14),
+            ]
             if cell.rect.height > 34 && cell.rect.width > 84 {
-                let detailAttributes: [NSAttributedString.Key: Any] = [
-                    .font: NSFont.monospacedDigitSystemFont(ofSize: 10, weight: .regular),
-                    .foregroundColor: ink.withAlphaComponent(light ? 0.66 : 0.72),
-                    .paragraphStyle: paragraph,
-                ].merging(shadow) { current, _ in current }
                 var detail = ByteFormat.string(cell.item.size(measure))
                 if let total = root?.size(measure), total > 0 {
                     let share = Double(cell.item.size(measure)) / Double(total) * 100
                     detail += String(format: "  ·  %.0f%%", share)
                 }
-                (detail as NSString).draw(
-                    with: CGRect(x: inset.minX, y: inset.minY + 15, width: inset.width, height: 13),
-                    options: [.usesLineFragmentOrigin, .truncatesLastVisibleLine],
-                    attributes: detailAttributes)
+                lines.append((detail, detailAttributes, 13))
 
-                // A folder tile stands for everything inside it; say how much.
-                if cell.item.isDirectory, cell.rect.height > 52, cell.rect.width > 110 {
-                    let countAttributes: [NSAttributedString.Key: Any] = [
-                        .font: NSFont.systemFont(ofSize: 9.5),
-                        .foregroundColor: ink.withAlphaComponent(light ? 0.5 : 0.45),
-                        .paragraphStyle: paragraph,
-                    ].merging(shadow) { current, _ in current }
-                    let files = cell.item.fileCount
-                    ("\(files.formatted()) file\(files == 1 ? "" : "s")" as NSString).draw(
-                        with: CGRect(x: inset.minX, y: inset.minY + 29, width: inset.width, height: 12),
-                        options: [.usesLineFragmentOrigin, .truncatesLastVisibleLine],
-                        attributes: countAttributes)
+                // What the block is, and for a folder how much it stands for.
+                if cell.rect.height > 52, cell.rect.width > 110 {
+                    var note = TreemapRenderer.district(of: cell, in: layout, measure: measure,
+                                                        rootWithin: rootWithin).label
+                    if cell.item.isDirectory {
+                        let files = cell.item.fileCount
+                        note = "\(files.formatted()) file\(files == 1 ? "" : "s")  ·  " + note
+                    }
+                    lines.append((note, noteAttributes, 12))
                 }
             }
-        }
-    }
 
-    private var labelShadow: NSShadow {
-        let shadow = NSShadow()
-        shadow.shadowColor = NSColor.black.withAlphaComponent(0.65)
-        shadow.shadowBlurRadius = 2
-        shadow.shadowOffset = NSSize(width: 0, height: -1)
-        return shadow
+            let inset = cell.rect.insetBy(dx: 8, dy: 7)
+            let widest = lines.map { ($0.text as NSString).size(withAttributes: $0.attributes).width }
+                .max() ?? 0
+            let sign = CGRect(x: inset.minX - 4, y: inset.minY - 3,
+                              width: min(inset.width, ceil(widest)) + 8,
+                              height: lines.reduce(0) { $0 + $1.height + 1 } + 4)
+            context.setFillColor(NSColor.black.withAlphaComponent(0.62).cgColor)
+            context.addPath(CGPath(roundedRect: sign, cornerWidth: 4, cornerHeight: 4, transform: nil))
+            context.fillPath()
+
+            var y = inset.minY
+            for line in lines {
+                (line.text as NSString).draw(
+                    with: CGRect(x: inset.minX, y: y, width: inset.width, height: line.height),
+                    options: [.usesLineFragmentOrigin, .truncatesLastVisibleLine],
+                    attributes: line.attributes)
+                y += line.height + 1
+            }
+        }
     }
 
     private func drawChrome() {
@@ -519,6 +521,15 @@ final class TreemapView: NSView {
                                  action: nil, keyEquivalent: "")
         heading.isEnabled = false
         menu.addItem(heading)
+        // A landfill block is the map's hint that this is rebuilt on demand;
+        // say so in words, since removing it is still the user's decision.
+        if TreemapRenderer.district(of: cell, in: layout, measure: measure,
+                                    rootWithin: root?.isWithinReclaimable ?? false) == .landfill {
+            let note = NSMenuItem(title: "Landfill: cache, build output or leftovers — usually rebuilt on demand",
+                                  action: nil, keyEquivalent: "")
+            note.isEnabled = false
+            menu.addItem(note)
+        }
         menu.addItem(.separator())
 
         if item.isDirectory, !item.children.isEmpty {
