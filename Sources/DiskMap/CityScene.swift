@@ -350,7 +350,7 @@ enum CityBuilder {
             heights[lot.index] = kit.tallest
 
             if labelled.contains(lot.index) {
-                let label = Label.node(name: lot.name, detail: lot.detail, district: lot.district)
+                let label = CityLabel.node(name: lot.name, detail: lot.detail, district: lot.district)
                 label.position = world(lot.rect.midX, lot.rect.midY, y: kit.tallest + 0.35)
                 town.addChildNode(label)
             }
@@ -422,7 +422,7 @@ final class MaterialCache {
 }
 
 /// A floating sign over a block: its name, its size, and what it is.
-enum Label {
+enum CityLabel {
     static func node(name: String, detail: String, district: District) -> SCNNode {
         let image = render(name: name, detail: "\(detail)  ·  \(district.label)")
         let height: CGFloat = 0.32

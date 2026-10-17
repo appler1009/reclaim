@@ -16,6 +16,12 @@ on:
       - 'LICENSE'
   workflow_dispatch:
 
+# Without this, steps run under `bash -e` and a failing command piped into
+# `tee` passes: a broken build or test run went unnoticed until a later step.
+defaults:
+  run:
+    shell: bash
+
 # A newer push to the same branch makes the older run pointless.
 concurrency:
   group: ci-${{ github.ref }}
