@@ -24,27 +24,54 @@ enum Theme {
 
 /// Where a tile stands on the city map.
 extension District {
-    static func of(_ item: FileItem, family: FileFamily, insideReclaimable: Bool) -> District {
-        // The small-files bundle is a stand-in, not a folder with a name of its own.
-        if item.representsSmallFiles { return zoned(family) }
-        return of(name: item.name, isDirectory: item.isDirectory, ext: item.ext,
-                  family: family, insideReclaimable: insideReclaimable)
+    /// The district for `item`. `ancestors` are the names of the folders above
+    /// it, nearest first; a layout works them out once for the folder in view.
+    static func of(_ item: FileItem, measure: SizeMeasure, ancestors: [String]) -> District {
+        let family = item.dominantFamily(measure)
+        // The small-files bundle stands in for many files and has no real name.
+        if item.representsSmallFiles {
+            return classify(DistrictClue(name: "", isDirectory: false, ext: "", family: family,
+                                         bytes: item.size(measure), fileCount: item.fileCount,
+                                         ancestors: ancestors))
+        }
+        let hasGit = item.isDirectory && item.children.contains { $0.isDirectory && $0.name == ".git" }
+        return classify(DistrictClue(name: item.name, isDirectory: item.isDirectory, ext: item.ext,
+                                     family: family, bytes: item.size(measure),
+                                     fileCount: item.fileCount, modified: item.modified,
+                                     hasGitFolder: hasGit, ancestors: ancestors))
     }
 }
 
 extension FileItem {
-    /// Named like something that is rebuilt on demand: a cache, build output, logs.
-    var isReclaimableByName: Bool {
-        !representsSmallFiles && District.isReclaimable(name: name, isDirectory: isDirectory, ext: ext)
-    }
-
-    /// This item, or a folder it sits in, is rebuildable.
-    var isWithinReclaimable: Bool {
-        var node: FileItem? = self
+    /// Names of the folders above this one, nearest first.
+    var ancestorNames: [String] {
+        var names: [String] = []
+        var node = parent
         while let current = node {
-            if current.isReclaimableByName { return true }
+            if !current.representsSmallFiles { names.append(current.name) }
             node = current.parent
         }
-        return false
+        return names
+    }
+}
+
+extension TreemapLayout {
+    /// The district of every cell, in cell order. Done once per layout, on the
+    /// main thread (the family roll-ups it reads are cached on the nodes).
+    func zoned(_ measure: SizeMeasure) -> [District] {
+        guard let root else { return [] }
+        let above = [root.name] + root.ancestorNames
+        return cells.map { cell in
+            if cell.item === root {
+                return District.of(cell.item, measure: measure, ancestors: root.ancestorNames)
+            }
+            var chain: [String] = []
+            var node = cell.item.parent
+            while let current = node, current !== root {
+                chain.append(current.name)
+                node = current.parent
+            }
+            return District.of(cell.item, measure: measure, ancestors: chain + above)
+        }
     }
 }

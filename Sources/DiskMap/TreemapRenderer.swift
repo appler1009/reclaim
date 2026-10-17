@@ -26,23 +26,6 @@ enum TreemapRenderer {
     static let asphalt = CGColor(srgbRed: 0.075, green: 0.082, blue: 0.105, alpha: 1)
     private static let stagedWash = Theme.accent.withAlphaComponent(0.38).cgColor
 
-    /// The district a cell is drawn as. `rootWithin` is whether the folder in
-    /// view is itself inside something rebuildable, worked out once per draw.
-    static func district(of cell: TreemapCell, in layout: TreemapLayout,
-                         measure: SizeMeasure, rootWithin: Bool) -> District {
-        var inside = rootWithin
-        if !inside {
-            // Only cells below the first level have folders between them and the root.
-            var node = cell.item.parent
-            while let current = node, current !== layout.root {
-                if current.isReclaimableByName { inside = true; break }
-                node = current.parent
-            }
-        }
-        return District.of(cell.item, family: cell.item.dominantFamily(measure),
-                           insideReclaimable: inside)
-    }
-
     /// `fillBackground` is off while a transition composites two layouts over
     /// one another — the second pass must not paint out the first.
     static func draw(layout: TreemapLayout,
@@ -50,14 +33,18 @@ enum TreemapRenderer {
                      dirty: CGRect,
                      measure: SizeMeasure,
                      staged: Set<ObjectIdentifier>,
+                     districts: [District]? = nil,
                      fillBackground: Bool = true) {
         if fillBackground {
             context.setFillColor(asphalt)
             context.fill(dirty)
         }
-        let rootWithin = layout.root?.isWithinReclaimable ?? false
+        // The view zones a layout once; anything else (the off-screen bench)
+        // zones the cells it actually builds on, as it reaches them.
+        let zoned = districts.flatMap { $0.count == layout.cells.count ? $0 : nil }
+        let above = zoned == nil ? layout.root.map { [$0.name] + $0.ancestorNames } ?? [] : []
 
-        for cell in layout.cells {
+        for (index, cell) in layout.cells.enumerated() {
             let rect = cell.rect
             guard rect.width > 0.3, rect.height > 0.3, rect.intersects(dirty) else { continue }
             let family = cell.item.dominantFamily(measure)
@@ -70,8 +57,9 @@ enum TreemapRenderer {
                 continue
             }
 
-            let district = self.district(of: cell, in: layout, measure: measure,
-                                          rootWithin: rootWithin)
+            let district = zoned?[index]
+                ?? District.of(cell.item, measure: measure,
+                               ancestors: cell.item === layout.root ? cell.item.ancestorNames : above)
             CityBlock.draw(district: district,
                            roof: roofs[family.index],
                            wall: walls[family.index],
@@ -140,44 +128,61 @@ enum CityBlock {
         // Too small for scenery: a single roof says what the block is.
         guard lot.width >= 16, lot.height >= 16 else {
             let pad = min(lot.width, lot.height) * 0.2
-            context.setFillColor(district == .landfill ? Scenery.dirt[1] : roof)
+            context.setFillColor(district.isGarbage ? Scenery.dirt[1] : roof)
             context.fill(lot.insetBy(dx: pad, dy: pad))
             return
         }
 
         context.saveGState()
         context.clip(to: lot)
-        var painter = Painter(context: context, rng: SplitMix64(seed: seed),
+        var painter = Painter(context: context, rng: SplitMix64(seed: seed), district: district,
                               lot: lot, roof: roof, wall: wall)
-        switch district {
-        case .techCampus: painter.techCampus()
-        case .dataCenter: painter.dataCenter()
-        case .school: painter.school()
-        case .stadium: painter.stadium()
-        case .park: painter.park()
-        case .warehouse: painter.warehouse()
-        case .factory: painter.factory()
-        case .utility: painter.utility()
+        switch district.archetype {
+        case .towers: painter.towers()
+        case .halls: painter.halls()
+        case .campus: painter.campus()
+        case .arena: painter.arena()
+        case .green: painter.green()
+        case .sheds: painter.sheds()
+        case .plant: painter.plant()
+        case .tanks: painter.tanks()
         case .housing: painter.housing()
-        case .landfill: painter.landfill()
+        case .airport: painter.airport()
+        case .mounds: painter.mounds()
+        case .scrap: painter.scrap()
+        case .shacks: painter.shacks()
+        case .toxic: painter.toxic()
+        case .logs: painter.logs()
         }
         context.restoreGState()
     }
 
     private static let sidewalk = CGColor(srgbRed: 0.22, green: 0.23, blue: 0.26, alpha: 1)
 
-    private static func ground(_ district: District) -> CGColor {
+    static func ground(_ district: District) -> CGColor {
         switch district {
-        case .techCampus: return CGColor(srgbRed: 0.15, green: 0.18, blue: 0.21, alpha: 1)
-        case .dataCenter: return CGColor(srgbRed: 0.15, green: 0.16, blue: 0.18, alpha: 1)
-        case .school: return CGColor(srgbRed: 0.16, green: 0.20, blue: 0.16, alpha: 1)
-        case .stadium: return CGColor(srgbRed: 0.15, green: 0.17, blue: 0.16, alpha: 1)
-        case .park: return CGColor(srgbRed: 0.13, green: 0.25, blue: 0.15, alpha: 1)
-        case .warehouse: return CGColor(srgbRed: 0.18, green: 0.17, blue: 0.15, alpha: 1)
-        case .factory: return CGColor(srgbRed: 0.17, green: 0.16, blue: 0.16, alpha: 1)
-        case .utility: return CGColor(srgbRed: 0.16, green: 0.16, blue: 0.18, alpha: 1)
+        case .rubble: return CGColor(srgbRed: 0.24, green: 0.24, blue: 0.25, alpha: 1)
+        case .ghostTown: return CGColor(srgbRed: 0.22, green: 0.21, blue: 0.19, alpha: 1)
+        case .toxicDump: return CGColor(srgbRed: 0.18, green: 0.20, blue: 0.12, alpha: 1)
+        case .recyclingDepot: return CGColor(srgbRed: 0.20, green: 0.22, blue: 0.24, alpha: 1)
+        default: break
+        }
+        switch district.archetype {
+        case .towers: return CGColor(srgbRed: 0.15, green: 0.18, blue: 0.21, alpha: 1)
+        case .halls: return CGColor(srgbRed: 0.17, green: 0.17, blue: 0.19, alpha: 1)
+        case .campus: return CGColor(srgbRed: 0.16, green: 0.20, blue: 0.16, alpha: 1)
+        case .arena: return CGColor(srgbRed: 0.15, green: 0.17, blue: 0.16, alpha: 1)
+        case .green: return CGColor(srgbRed: 0.13, green: 0.25, blue: 0.15, alpha: 1)
+        case .sheds: return CGColor(srgbRed: 0.18, green: 0.17, blue: 0.15, alpha: 1)
+        case .plant: return CGColor(srgbRed: 0.17, green: 0.16, blue: 0.16, alpha: 1)
+        case .tanks: return CGColor(srgbRed: 0.16, green: 0.16, blue: 0.18, alpha: 1)
         case .housing: return CGColor(srgbRed: 0.15, green: 0.19, blue: 0.15, alpha: 1)
-        case .landfill: return Scenery.dirt[0]
+        case .airport: return CGColor(srgbRed: 0.20, green: 0.26, blue: 0.18, alpha: 1)
+        case .mounds: return Scenery.dirt[0]
+        case .scrap: return CGColor(srgbRed: 0.24, green: 0.20, blue: 0.16, alpha: 1)
+        case .shacks: return CGColor(srgbRed: 0.26, green: 0.21, blue: 0.15, alpha: 1)
+        case .toxic: return CGColor(srgbRed: 0.18, green: 0.20, blue: 0.12, alpha: 1)
+        case .logs: return CGColor(srgbRed: 0.24, green: 0.20, blue: 0.14, alpha: 1)
         }
     }
 }
@@ -203,6 +208,36 @@ private enum Scenery {
         CGColor(srgbRed: 0.24, green: 0.50, blue: 0.27, alpha: 1),
         CGColor(srgbRed: 0.17, green: 0.36, blue: 0.22, alpha: 1),
     ]
+    static let concreteHeaps: [CGColor] = [
+        CGColor(srgbRed: 0.24, green: 0.24, blue: 0.25, alpha: 1),
+        CGColor(srgbRed: 0.36, green: 0.36, blue: 0.37, alpha: 1),
+        CGColor(srgbRed: 0.46, green: 0.45, blue: 0.44, alpha: 1),
+        CGColor(srgbRed: 0.56, green: 0.55, blue: 0.52, alpha: 1),
+    ]
+    static let rust: [CGColor] = [
+        CGColor(srgbRed: 0.55, green: 0.30, blue: 0.18, alpha: 1),
+        CGColor(srgbRed: 0.45, green: 0.26, blue: 0.17, alpha: 1),
+        CGColor(srgbRed: 0.40, green: 0.40, blue: 0.42, alpha: 1),
+        CGColor(srgbRed: 0.62, green: 0.40, blue: 0.22, alpha: 1),
+    ]
+    static let bales: [CGColor] = [
+        CGColor(srgbRed: 0.35, green: 0.62, blue: 0.40, alpha: 1),
+        CGColor(srgbRed: 0.35, green: 0.50, blue: 0.75, alpha: 1),
+        CGColor(srgbRed: 0.85, green: 0.85, blue: 0.82, alpha: 1),
+        CGColor(srgbRed: 0.75, green: 0.62, blue: 0.40, alpha: 1),
+    ]
+    static let tin: [CGColor] = [
+        CGColor(srgbRed: 0.55, green: 0.56, blue: 0.58, alpha: 1),
+        CGColor(srgbRed: 0.58, green: 0.36, blue: 0.24, alpha: 1),
+        CGColor(srgbRed: 0.25, green: 0.42, blue: 0.65, alpha: 1),
+        CGColor(srgbRed: 0.70, green: 0.62, blue: 0.45, alpha: 1),
+        CGColor(srgbRed: 0.45, green: 0.55, blue: 0.42, alpha: 1),
+    ]
+    static let wood = CGColor(srgbRed: 0.55, green: 0.38, blue: 0.22, alpha: 1)
+    static let woodEnd = CGColor(srgbRed: 0.80, green: 0.64, blue: 0.42, alpha: 1)
+    static let ooze = CGColor(srgbRed: 0.55, green: 0.95, blue: 0.25, alpha: 0.85)
+    static let barrel = CGColor(srgbRed: 0.85, green: 0.70, blue: 0.15, alpha: 1)
+    static let runway = CGColor(srgbRed: 0.10, green: 0.10, blue: 0.12, alpha: 1)
     static let turf = CGColor(srgbRed: 0.22, green: 0.48, blue: 0.28, alpha: 1)
     static let water = CGColor(srgbRed: 0.22, green: 0.42, blue: 0.62, alpha: 1)
     static let path = CGColor(srgbRed: 0.62, green: 0.58, blue: 0.48, alpha: 0.55)
@@ -242,6 +277,7 @@ struct SplitMix64 {
 private struct Painter {
     let context: CGContext
     var rng: SplitMix64
+    let district: District
     let lot: CGRect
     let roof: CGColor
     let wall: CGColor
@@ -379,7 +415,7 @@ private struct Painter {
     // MARK: Districts
 
     /// Code: glass towers on a paved plaza, a helipad on the tallest.
-    mutating func techCampus() {
+    mutating func towers() {
         let u = unit
         let center = CGPoint(x: lot.midX, y: lot.midY)
         line(CGPoint(x: lot.minX, y: center.y), CGPoint(x: lot.maxX, y: center.y),
@@ -394,12 +430,13 @@ private struct Painter {
             let margin = Swift.min(cell.width, cell.height) * rng.between(0.12, 0.24)
             let space = cell.insetBy(dx: margin, dy: margin)
             guard space.width > 4, space.height > 6 else { continue }
-            let height = Swift.min(space.height * 0.6, u * rng.between(1.4, 4.2))
+            let height = Swift.min(space.height * 0.6,
+                                   u * rng.between(1.4, 4.2) * CGFloat(district.heightScale))
             building(in: space, height: height, roof: glassRoof, wall: wall,
                      windows: Scenery.glassWindow)
             if height > (tallest?.height ?? 0) { tallest = (space, height) }
         }
-        if let tallest {
+        if let tallest, district == .techCampus || district == .aiLab {
             let top = CGRect(x: tallest.rect.minX, y: tallest.rect.minY,
                              width: tallest.rect.width, height: tallest.rect.height - tallest.height)
             let pad = Swift.min(top.width, top.height) * 0.6
@@ -420,7 +457,7 @@ private struct Painter {
     }
 
     /// Data: rows of low server halls with cooling units on the roofs.
-    mutating func dataCenter() {
+    mutating func halls() {
         let u = unit
         let cells = grid(lot.insetBy(dx: u * 0.4, dy: u * 0.4), count: count(perUnits: 12, max: 12))
         let unitColour = blend(wall, toward: CGColor(gray: 0, alpha: 1), by: 0.35)
@@ -451,7 +488,7 @@ private struct Painter {
 
     /// Documents: a school — a U-shaped building, a sports field with a running
     /// track, a flagpole, trees.
-    mutating func school() {
+    mutating func campus() {
         let u = unit
         let (campus, grounds) = split(lot, share: rng.between(0.45, 0.58))
 
@@ -492,7 +529,7 @@ private struct Painter {
     }
 
     /// Media: a stadium bowl, floodlights at the corners.
-    mutating func stadium() {
+    mutating func arena() {
         let u = unit
         let bowl = lot.insetBy(dx: lot.width * 0.06, dy: lot.height * 0.08)
         oval(bowl.offsetBy(dx: u * 0.4, dy: u * 0.4), Scenery.shadow)
@@ -524,7 +561,7 @@ private struct Painter {
     }
 
     /// Images: a park — a pond, a winding path, a pavilion, lots of trees.
-    mutating func park() {
+    mutating func green() {
         let u = unit
         let pond = CGRect(x: rng.between(lot.minX, lot.midX), y: rng.between(lot.minY, lot.midY),
                           width: lot.width * rng.between(0.3, 0.45), height: lot.height * rng.between(0.25, 0.4))
@@ -551,7 +588,7 @@ private struct Painter {
     }
 
     /// Archives: long sheds with ridged roofs and a container yard.
-    mutating func warehouse() {
+    mutating func sheds() {
         let u = unit
         let (sheds, yard) = split(lot, share: rng.between(0.55, 0.7))
         let wide = sheds.width >= sheds.height
@@ -598,7 +635,7 @@ private struct Painter {
     }
 
     /// Apps: a plant with a sawtooth roof and smoking chimneys.
-    mutating func factory() {
+    mutating func plant() {
         let u = unit
         let plant = lot.insetBy(dx: lot.width * 0.1, dy: lot.height * 0.1)
         let height = u * 1.2
@@ -638,7 +675,7 @@ private struct Painter {
     }
 
     /// System files: round storage tanks joined by pipes.
-    mutating func utility() {
+    mutating func tanks() {
         let u = unit
         let cells = grid(lot.insetBy(dx: u * 0.3, dy: u * 0.3), count: count(perUnits: 12, max: 9))
         var tanks: [(center: CGPoint, diameter: CGFloat)] = []
@@ -687,7 +724,7 @@ private struct Painter {
     }
 
     /// Rebuildable things: mounds of rubbish, debris, a bulldozer, gulls, a fence.
-    mutating func landfill() {
+    mutating func mounds() {
         let u = unit
         // Mounds, piled from the widest and darkest up.
         let mounds = count(perUnits: 30, max: 5)
@@ -696,8 +733,9 @@ private struct Painter {
                               y: rng.between(lot.minY - u, lot.maxY - u * 3),
                               width: Swift.max(u * 4, lot.width * rng.between(0.35, 0.65)),
                               height: Swift.max(u * 3, lot.height * rng.between(0.3, 0.55)))
-            for layer in 1 ..< Scenery.dirt.count {
-                oval(heap, Scenery.dirt[layer])
+            let layers = district == .rubble ? Scenery.concreteHeaps : Scenery.dirt
+            for layer in 1 ..< layers.count {
+                oval(heap, layers[layer])
                 heap = heap.insetBy(dx: heap.width * 0.16, dy: heap.height * 0.18)
                     .offsetBy(dx: -heap.width * 0.04, dy: -heap.height * 0.06)
             }
@@ -751,6 +789,195 @@ private struct Painter {
         context.setLineDash(phase: 0, lengths: [1.5, 1.5])
         context.stroke(lot.insetBy(dx: 1.5, dy: 1.5))
         context.setLineDash(phase: 0, lengths: [])
+    }
+
+
+    // MARK: More districts
+
+    /// Cloud sync: a runway with its markings, a terminal and a control tower.
+    mutating func airport() {
+        let u = unit
+        let wide = lot.width >= lot.height
+        let strip: CGRect = wide
+            ? CGRect(x: lot.minX + u * 0.4, y: lot.midY - u * 0.8, width: lot.width - u * 0.8, height: u * 1.6)
+            : CGRect(x: lot.midX - u * 0.8, y: lot.minY + u * 0.4, width: u * 1.6, height: lot.height - u * 0.8)
+        fill(strip, Scenery.runway)
+        context.setStrokeColor(Scenery.chalk)
+        context.setLineWidth(Swift.max(0.6, u * 0.12))
+        context.setLineDash(phase: 0, lengths: [u * 0.8, u * 0.6])
+        if wide {
+            context.move(to: CGPoint(x: strip.minX + u, y: strip.midY))
+            context.addLine(to: CGPoint(x: strip.maxX - u, y: strip.midY))
+        } else {
+            context.move(to: CGPoint(x: strip.midX, y: strip.minY + u))
+            context.addLine(to: CGPoint(x: strip.midX, y: strip.maxY - u))
+        }
+        context.strokePath()
+        context.setLineDash(phase: 0, lengths: [])
+
+        // Terminal on the far side of the runway, tower beside it.
+        let apron: CGRect = wide
+            ? CGRect(x: lot.minX + u, y: lot.minY + u * 0.4, width: lot.width * 0.5, height: strip.minY - lot.minY - u * 0.8)
+            : CGRect(x: lot.minX + u * 0.4, y: lot.minY + u, width: strip.minX - lot.minX - u * 0.8, height: lot.height * 0.5)
+        if apron.width > 6, apron.height > 6 {
+            building(in: apron, height: u * 0.8, roof: roof, wall: wall, windows: Scenery.glassWindow)
+        }
+        let towerBase = CGRect(x: lot.maxX - u * 2, y: lot.minY + u * 0.5, width: u, height: u * 3)
+        building(in: towerBase, height: u * 2, roof: Scenery.glassWindow, wall: Scenery.concrete)
+
+        // A plane on the runway.
+        let at = CGPoint(x: rng.between(strip.minX + u * 2, Swift.max(strip.minX + u * 2, strip.maxX - u * 2)),
+                         y: rng.between(strip.minY + u * 0.8, Swift.max(strip.minY + u * 0.8, strip.maxY - u * 0.8)))
+        let white = CGColor(gray: 0.95, alpha: 1)
+        if wide {
+            fill(CGRect(x: at.x - u * 1.2, y: at.y - u * 0.15, width: u * 2.4, height: u * 0.3), white)
+            fill(CGRect(x: at.x - u * 0.2, y: at.y - u * 1.0, width: u * 0.45, height: u * 2.0), white)
+        } else {
+            fill(CGRect(x: at.x - u * 0.15, y: at.y - u * 1.2, width: u * 0.3, height: u * 2.4), white)
+            fill(CGRect(x: at.x - u * 1.0, y: at.y - u * 0.2, width: u * 2.0, height: u * 0.45), white)
+        }
+    }
+
+    /// Scrapyard, junkyard and recycling depot: heaps of rusting things, or
+    /// neat bales for the depot, with a crane over the pile.
+    mutating func scrap() {
+        let u = unit
+        let tidy = district == .recyclingDepot
+        let colours = tidy ? Scenery.bales : (district == .junkyard ? Scenery.debris : Scenery.rust)
+        let pieces = Swift.max(10, Swift.min(160, Int(area / (u * u * 1.2))))
+        if tidy {
+            let size = u * 0.9
+            var y = lot.minY + u * 0.5
+            while y + size < lot.maxY - u * 0.3 {
+                var x = lot.minX + u * 0.5
+                while x + size < lot.maxX - u * 0.3 {
+                    if rng.chance(0.85) {
+                        fill(CGRect(x: x + size * 0.15, y: y + size * 0.15, width: size, height: size), Scenery.shadow)
+                        fill(CGRect(x: x, y: y, width: size, height: size), rng.pick(colours))
+                    }
+                    x += size * 1.25
+                }
+                y += size * 1.35
+            }
+        } else {
+            for _ in 0 ..< pieces {
+                let w = u * rng.between(0.6, 1.8)
+                let h = u * rng.between(0.4, 1.0)
+                let at = CGPoint(x: rng.between(lot.minX, lot.maxX), y: rng.between(lot.minY, lot.maxY))
+                context.saveGState()
+                context.translateBy(x: at.x, y: at.y)
+                context.rotate(by: rng.between(-0.8, 0.8))
+                fill(CGRect(x: -w / 2 + 0.6, y: -h / 2 + 0.6, width: w, height: h), Scenery.shadow)
+                fill(CGRect(x: -w / 2, y: -h / 2, width: w, height: h), rng.pick(colours))
+                context.restoreGState()
+            }
+        }
+        // Crane.
+        if lot.width > u * 6, lot.height > u * 4 {
+            let base = CGPoint(x: lot.minX + lot.width * rng.between(0.2, 0.8), y: lot.minY + lot.height * 0.7)
+            line(base, CGPoint(x: base.x + u * 3, y: base.y - u * 2.5), Scenery.caution, width: Swift.max(1, u * 0.25))
+            fill(CGRect(x: base.x - u * 0.6, y: base.y - u * 0.4, width: u * 1.2, height: u * 0.8), Scenery.caution)
+            oval(CGRect(x: base.x + u * 2.6, y: base.y - u * 2.3, width: u * 0.8, height: u * 0.8), Scenery.rubber)
+        }
+    }
+
+    /// Shantytown and ghost town: crowded little shacks with tin roofs in
+    /// mixed colours. The ghost town is faded, and some roofs have fallen in.
+    mutating func shacks() {
+        let u = unit
+        let ghost = district == .ghostTown
+        let cells = grid(lot, count: count(perUnits: 2.2, max: 90, min: 4))
+        for cell in cells {
+            let w = cell.width * rng.between(0.6, 0.95)
+            let h = cell.height * rng.between(0.6, 0.95)
+            let shack = CGRect(x: cell.minX + rng.between(0, cell.width - w),
+                               y: cell.minY + rng.between(0, cell.height - h), width: w, height: h)
+            guard shack.width > 2, shack.height > 2 else { continue }
+            var tin = rng.pick(Scenery.tin)
+            if ghost { tin = blend(tin, toward: CGColor(gray: 0.45, alpha: 1), by: 0.7) }
+            let caved = ghost && rng.chance(0.3)
+            building(in: shack, height: Swift.min(shack.height * 0.35, u * 0.35),
+                     roof: caved ? Scenery.shadow : tin,
+                     wall: blend(tin, toward: CGColor(gray: 0, alpha: 1), by: 0.5))
+            // Corrugation.
+            if shack.width > 5, !caved {
+                context.setStrokeColor(CGColor(gray: 0, alpha: 0.2))
+                context.setLineWidth(0.5)
+                var x = shack.minX + 1
+                while x < shack.maxX {
+                    context.move(to: CGPoint(x: x, y: shack.minY))
+                    context.addLine(to: CGPoint(x: x, y: shack.midY))
+                    x += 1.6
+                }
+                context.strokePath()
+            }
+        }
+        if ghost {
+            // Dead trees.
+            for _ in 0 ..< count(perUnits: 30, max: 6, min: 1) {
+                let at = CGPoint(x: rng.between(lot.minX, lot.maxX), y: rng.between(lot.minY, lot.maxY))
+                line(at, CGPoint(x: at.x + u * 0.6, y: at.y - u), CGColor(gray: 0.35, alpha: 1), width: 0.75)
+                line(at, CGPoint(x: at.x - u * 0.5, y: at.y - u * 0.8), CGColor(gray: 0.35, alpha: 1), width: 0.75)
+            }
+        }
+    }
+
+    /// Crash dumps: glowing pools, rows of leaking barrels, a warning fence.
+    mutating func toxic() {
+        let u = unit
+        for _ in 0 ..< count(perUnits: 25, max: 5) {
+            let pool = CGRect(x: rng.between(lot.minX, lot.maxX - u * 3), y: rng.between(lot.minY, lot.maxY - u * 2),
+                              width: u * rng.between(2, 5), height: u * rng.between(1.2, 3))
+            oval(pool.insetBy(dx: -u * 0.4, dy: -u * 0.4), CGColor(srgbRed: 0.4, green: 0.7, blue: 0.2, alpha: 0.25))
+            oval(pool, Scenery.ooze)
+        }
+        let size = u * 0.7
+        var y = lot.minY + u * 0.5
+        while y + size < lot.maxY - u * 0.3 {
+            var x = lot.minX + u * 0.5
+            while x + size < lot.maxX - u * 0.3 {
+                if rng.chance(0.55) {
+                    let barrel = CGRect(x: x, y: y, width: size, height: size)
+                    oval(barrel.offsetBy(dx: size * 0.2, dy: size * 0.2), Scenery.shadow)
+                    oval(barrel, rng.chance(0.2) ? roof : Scenery.barrel)
+                    ring(barrel.insetBy(dx: size * 0.2, dy: size * 0.2), CGColor(gray: 0, alpha: 0.35), width: 0.6)
+                }
+                x += size * 1.6
+            }
+            y += size * 1.8
+        }
+        context.setStrokeColor(Scenery.caution)
+        context.setLineWidth(1)
+        context.setLineDash(phase: 0, lengths: [3, 2])
+        context.stroke(lot.insetBy(dx: 1.5, dy: 1.5))
+        context.setLineDash(phase: 0, lengths: [])
+    }
+
+    /// Logs: stacks of timber, ends showing, and a sawmill shed.
+    mutating func logs() {
+        let u = unit
+        let (yard, mill) = split(lot, share: 0.75)
+        let length = u * rng.between(2.5, 4)
+        let thick = u * 0.45
+        var y = yard.minY + u * 0.4
+        while y + thick * 4 < yard.maxY {
+            var x = yard.minX + u * 0.4
+            while x + length < yard.maxX {
+                // A stack: logs side by side, cut ends on the right.
+                for row in 0 ..< 4 {
+                    let log = CGRect(x: x, y: y + CGFloat(row) * thick, width: length, height: thick * 0.9)
+                    fill(log, Scenery.wood)
+                    oval(CGRect(x: log.maxX - thick * 0.45, y: log.minY, width: thick * 0.9, height: thick * 0.9),
+                         Scenery.woodEnd)
+                }
+                x += length + u * 0.8
+            }
+            y += thick * 4 + u * 0.6
+        }
+        let shed = mill.insetBy(dx: u * 0.4, dy: u * 0.4)
+        if shed.width > 5, shed.height > 5 {
+            building(in: shed, height: u * 0.8, roof: roof, wall: Scenery.wood)
+        }
     }
 
     private static let sRGB = CGColorSpace(name: CGColorSpace.sRGB)!
